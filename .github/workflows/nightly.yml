@@ -26,7 +26,7 @@ jobs:
     env:
       OVSX_PAT: ${{ secrets.OVSX_PAT }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # need history to detect new commits
 
@@ -40,10 +40,10 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         if: steps.check.outputs.skip != 'true'
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install tooling
         if: steps.check.outputs.skip != 'true'
@@ -75,7 +75,7 @@ jobs:
 
       - name: Upload VSIX artifact
         if: steps.check.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nightly-vsix
           path: claude-code-workflow-dashboard.vsix
