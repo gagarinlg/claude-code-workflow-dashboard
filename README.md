@@ -93,7 +93,7 @@ Or press **F5** in this folder to launch an Extension Development Host.
 
 ## Publishing
 
-This extension publishes under the `gagarinlg` Marketplace publisher via the
+This extension publishes under the `malte-langermann` Marketplace publisher via the
 GitHub Actions **Release** workflow (push a `vX.Y.Z` tag). Nightly pre-releases
 are published by the **Nightly** workflow. CI validates and packages every push.
 

@@ -3,7 +3,7 @@
   "displayName": "Claude Code Workflow Dashboard",
   "description": "Live dashboard for Claude Code workflow runs — loop & agent overview, per-agent output, and review findings, updated in real time.",
   "version": "0.4.0",
-  "publisher": "gagarinlg",
+  "publisher": "malte-langermann",
   "author": { "name": "Malte Langermann", "email": "malte@langermann.net" },
   "license": "GPL-3.0-or-later",
   "icon": "media/icon.png",

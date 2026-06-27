@@ -3,7 +3,7 @@
 ## 0.4.0
 
 - Renamed to **Claude Code Workflow Dashboard** (extension id
-  `claude-code-workflow-dashboard`, publisher `gagarinlg`) and pointed
+  `claude-code-workflow-dashboard`, publisher `malte-langermann`) and pointed
   repository/bugs/homepage at `github.com/gagarinlg/claude-code-workflow-dashboard`.
 - Relicensed from MIT to **GPL-3.0-or-later**.
 - Added GitHub Actions CI (lint/package on every push & PR), a tag-driven

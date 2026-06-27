@@ -5,7 +5,7 @@ name: Release
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   VSCE_PAT  - Azure DevOps Personal Access Token for the VS Code Marketplace
-#               publisher "gagarinlg" (Marketplace > Manage > Publish scope).
+#               publisher "malte-langermann" (Marketplace > Manage > Publish scope).
 #   OVSX_PAT  - (optional) Open VSX access token; skip the ovsx step if unset.
 
 on:
