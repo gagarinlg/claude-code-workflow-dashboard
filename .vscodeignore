@@ -4,4 +4,7 @@
 .git/**
 media/icon.svg
 PUBLISHING.md
+ROADMAP.md
+CLAUDE.md
+docs/**
 *.vsix

@@ -97,6 +97,17 @@ This extension publishes under the `malte-langermann` Marketplace publisher via 
 GitHub Actions **Release** workflow (push a `vX.Y.Z` tag). Nightly pre-releases
 are published by the **Nightly** workflow. CI validates and packages every push.
 
+## Roadmap & contributing
+
+The planned direction (TypeScript migration, metrics + charts, Markdown export,
+agent timeline/graph, robustness, broader distribution) is tracked in
+**[ROADMAP.md](ROADMAP.md)**. Project orientation for contributors lives in
+**[CLAUDE.md](CLAUDE.md)**, and the on-disk run format the dashboard reads is
+documented in **[docs/DATA-FORMAT.md](docs/DATA-FORMAT.md)**.
+
+> This is an unofficial, community-built tool. It is **not affiliated with or
+> endorsed by Anthropic**.
+
 ## License
 
 GPL-3.0-or-later — see [LICENSE](LICENSE).
