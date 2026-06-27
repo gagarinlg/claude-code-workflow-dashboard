@@ -22,16 +22,40 @@ jobs:
     name: Publish to Marketplace & Open VSX
     runs-on: ubuntu-latest
     env:
-      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+      # Non-secret boolean flag: 'true' when the OVSX_PAT secret is set.
+      # OVSX_PAT itself is NOT exposed here — it is scoped only to the
+      # 'Publish to Open VSX' step env block. The flag is used in the
+      # step's if: condition (secrets context is unavailable there).
+      HAS_OVSX_PAT: ${{ secrets.OVSX_PAT != '' }}
     steps:
-      - uses: actions/checkout@v7
+      # Pinned to commit SHA to prevent supply-chain attacks on Marketplace token.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v4
         with:
           node-version: 22
+          # npm caching omitted intentionally — release runs are infrequent and
+          # always publish fresh artifacts; caching is not worth the complexity.
 
       - name: Install tooling
-        run: npm install -g @vscode/vsce ovsx
+        # Pinned to exact versions to prevent supply-chain attacks: a compromised or
+        # future-malicious version of these tools could exfiltrate VSCE_PAT at publish time.
+        run: npm install -g @vscode/vsce@3.3.2 ovsx@0.9.4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test with coverage (90 % gate on src/data/** and src/webview/**)
+        run: npm run coverage
 
       - name: Verify tag matches package.json version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -49,16 +73,21 @@ jobs:
 
       - name: Publish to VS Code Marketplace
         env:
+          # Pass the token as an env var so it does not appear in /proc/<pid>/cmdline.
+          # vsce reads VSCE_PAT from the environment when -p is not supplied.
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: vsce publish --packagePath claude-code-workflow-dashboard.vsix -p "$VSCE_PAT"
+        run: vsce publish --packagePath claude-code-workflow-dashboard.vsix
 
       - name: Publish to Open VSX
-        if: ${{ env.OVSX_PAT != '' }}
-        run: ovsx publish claude-code-workflow-dashboard.vsix -p "$OVSX_PAT"
+        if: env.HAS_OVSX_PAT == 'true'
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        # ovsx reads OVSX_PAT from the environment when -p is not supplied.
+        run: ovsx publish claude-code-workflow-dashboard.vsix
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v2
         with:
           files: claude-code-workflow-dashboard.vsix
           generate_release_notes: true

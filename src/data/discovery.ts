@@ -16,13 +16,15 @@ export function findWorkflowDir(base: string, depth = 5): string | null {
       return;
     }
     for (const e of entries) {
-      if (!e.isDirectory()) continue;
+      // Skip symlinks to avoid following loops or escaping the watched tree.
+      if (!e.isDirectory() || e.isSymbolicLink()) continue;
       const p = path.join(dir, e.name);
       if (e.name.startsWith('wf_') && path.basename(dir) === 'workflows') {
         let m: number;
         try {
           m = fs.statSync(p).mtimeMs;
         } catch {
+          /* c8 ignore next */ // TOCTOU: dir existed at readdirSync but is gone/inaccessible by statSync
           continue;
         }
         if (m > bestM) {

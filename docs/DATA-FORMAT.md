@@ -1,7 +1,7 @@
 # Data format consumed by the dashboard
 
 This documents the on-disk Claude Code `Workflow()` run format the extension
-**reads** (it never writes). It is reverse-engineered from `extension.js` and the
+**reads** (it never writes). It is reverse-engineered from the modules under `src/data/` and live
 runs under `~/.claude/projects`. **It is an internal, undocumented Claude Code
 format and may change between CLI versions** — parse everything defensively.
 
@@ -95,7 +95,7 @@ For each agent, with `STALE_SECS = 90`:
 {
   "ok": true,
   "runId": "wf_<id>",
-  "workflowDir": "<abs path>",
+  "workflowDir": "<abs path>",   // NOTE: stripped by safeSnap() before webview delivery — present in the host's SnapshotOk type but absent from every message the webview receives.
   "updatedAt": "<localized time>",
   "loop": { "phase", "live", "done", "dead", "total", "outTok", "tools",
             "passes", "findings", "sevTotals": { "HIGH": 2, ... } },

@@ -14,22 +14,41 @@ jobs:
     name: Validate & package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # Pinned to commit SHA — same protection as release/nightly.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v4
         with:
           node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Install vsce
-        run: npm install -g @vscode/vsce
+        # Pinned to exact version — no VSCE_PAT is used in CI, but consistent pinning
+        # prevents unexpected breakage from a yanked or malicious future version.
+        run: npm install -g @vscode/vsce@3.3.2
 
-      # The extension is plain JS with no build step; this validates the
-      # manifest and produces an installable VSIX as a build artifact.
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test with coverage (90 % gate on src/data/** and src/webview/**)
+        run: npm run coverage
+
+      # Runs vscode:prepublish (npm run build) automatically via the lifecycle
+      # hook; validates the manifest and produces an installable VSIX artifact.
       - name: Package extension
         run: vsce package --out claude-code-workflow-dashboard.vsix
 
       - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: vsix
           path: claude-code-workflow-dashboard.vsix

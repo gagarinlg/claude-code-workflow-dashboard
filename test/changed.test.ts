@@ -11,8 +11,14 @@ describe('walkChanged', () => {
     expect(walkChanged('', 120)).toBeNull();
   });
 
-  it('returns null for a non-existent repo path', () => {
-    expect(walkChanged('/no/such/path', 120)).toBeNull();
+  it('returns empty array (not null) for a non-existent repo path', () => {
+    // After removing the redundant existsSync pre-flight, a non-existent path
+    // causes readdirSync to throw inside walk(), which is caught and returns early.
+    // The outer function returns [] (nothing found) rather than null.
+    // null is reserved for the "no repo string provided" case (empty string).
+    const result = walkChanged('/no/such/path', 120);
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toEqual([]);
   });
 
   it('returns recently modified files from the fixture dir', () => {
@@ -30,7 +36,13 @@ describe('walkChanged', () => {
   });
 
   it('excludes files older than maxAgeSec', () => {
-    // Use a maxAgeSec of 0 — no file can be modified in negative time
+    // Back-date the file touched by the previous test so its mtime is well
+    // in the past — prevents sub-millisecond clock jitter from making it
+    // appear newer than Date.now() inside walkChanged (which recomputes now).
+    const target = path.join(FIXTURES, 'wf_basic', 'agent-aaa.jsonl');
+    const oldTime = new Date(Date.now() - 10_000);
+    fs.utimesSync(target, oldTime, oldTime);
+
     const result = walkChanged(FIXTURES, 0);
     expect(result).not.toBeNull();
     expect(result!.length).toBe(0);
@@ -127,7 +139,17 @@ describe('walkChanged', () => {
   });
 
   it('does not throw when a subdir becomes unreadable mid-walk', () => {
-    // This is guarded by the try/catch in walkChanged
-    expect(() => walkChanged(FIXTURES, 120)).not.toThrow();
+    // Actually exercise the readdirSync catch by creating a chmod-000 subdir.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'changed-unreadable-'));
+    const blockedDir = path.join(tmpDir, 'unreadable');
+    try {
+      fs.mkdirSync(blockedDir);
+      fs.chmodSync(blockedDir, 0o000);
+      // Should not throw — the catch block on readdirSync silently returns
+      expect(() => walkChanged(tmpDir, 120)).not.toThrow();
+    } finally {
+      try { fs.chmodSync(blockedDir, 0o755); } catch {}
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

@@ -6,5 +6,22 @@ media/icon.svg
 PUBLISHING.md
 ROADMAP.md
 CLAUDE.md
+SECURITY.md
 docs/**
 *.vsix
+
+# M0-T4: exclude build sources, tooling config, dev artifacts
+src/**
+test/**
+*.test.ts
+tsconfig.json
+eslint.config.mjs
+vitest.config.ts
+build.mjs
+scripts/**
+package-lock.json
+dist/*.map
+.review-tmp/**
+.claude/**
+extension.js
+coverage/**

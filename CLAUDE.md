@@ -33,48 +33,70 @@ features from the broader ecosystem (notably the `koh0001/claude-dashboard-exten
 "Claude Flow Monitor", which is a 7-tab teams monitor — we do NOT chase its
 breadth). We differentiate on focus and signal, not surface area.
 
-## Current tech stack (pre-M0)
+## Current tech stack (post-M0)
 
-- **Single plain-JS file** `extension.js` (CommonJS, `require('vscode')`), no build
-  step, no dependencies. The webview HTML/CSS/JS is a template string returned by
-  `getHtml()`; the host posts `{type:'snapshot', snap}` messages to it.
+- **TypeScript** (`strict`) compiled via **esbuild** (`build.mjs`): `src/extension.ts`
+  → `dist/extension.js` (CommonJS, external `vscode`).
+- Pure data functions live under `src/data/`; the webview template in
+  `src/webview/html.ts`. The host posts `{type:'snapshot', snap}` messages to the
+  webview.
+- **vitest** unit tests under `test/`, with a 90 % coverage gate on `src/data/**` and `src/webview/**`.
+- **ESLint** flat config (`eslint.config.mjs`, `typescript-eslint`).
 - `@nextcloud`-free; only the `vscode` API + Node `fs/os/path`.
-- Engines: `vscode ^1.84.0`.
+- Engines: `vscode ^1.84.0`, `node >=18.0.0`.
 
-> **M0 migrates this to TypeScript + a bundler (esbuild/tsup) with unit tests.**
-> After M0, the layout and commands below change — keep this section in sync.
-
-## Layout (current)
+## Layout (post-M0)
 
 ```
-extension.js          Everything: config, parsing, snapshot build, host wiring, webview HTML.
-package.json          Manifest: views container, dashboard webview, commands, keybinding, settings.
-media/                icon.png (tile), icon.svg (source, ignored), activity.svg (activity-bar icon).
-WORKFLOW-AUTHORING.md Guide shipped in the VSIX; opened via the "Open Workflow Authoring Guide" command.
-README.md             Marketplace listing source.
-CHANGELOG.md          Keep an entry per release (see "Keep docs in sync").
-LICENSE               Full GPL-3.0 text.
-docs/DATA-FORMAT.md   Reverse-engineered spec of the journal/transcript format we consume.
-ROADMAP.md            The plan. Start here for feature work.
-.github/workflows/    ci.yml (validate+package), release.yml (tag→publish), nightly.yml (daily pre-release).
-PUBLISHING.md         LOCAL-ONLY release runbook — gitignored, never committed or shipped.
+src/extension.ts          Activation / host wiring: commands, views, status bar, watcher, timer.
+src/data/discovery.ts     findWorkflowDir (+ future recent-runs listing).
+src/data/parse.ts         jload, firstUserText, deriveLabel, classify, agentStats, sevCounts.
+src/data/snapshot.ts      buildSnapshot + Snapshot types (mirrors docs/DATA-FORMAT.md).
+src/data/changed.ts       walkChanged.
+src/webview/html.ts       getHtml() template + inline client script.
+dist/extension.js         Bundled output (esbuild, CommonJS). Shipped in VSIX; not in source control.
+build.mjs                 esbuild build script (production + --watch mode).
+vitest.config.ts          Vitest config; 90 % coverage gate on src/data/** and src/webview/**.
+eslint.config.mjs         ESLint flat config (typescript-eslint).
+tsconfig.json             TypeScript strict config.
+scripts/typecheck.mjs     tsc --noEmit wrapper (TS18003 suppression is a now-dormant safety net; src/ always exists post-M0).
+test/                     Vitest unit tests (*.test.ts) + fixtures/ (wf_basic, wf_partial, base).
+                          Files: changed, discovery, extension-invariants, html, m0-acceptance, parse, snapshot, snapshot-toctou.
+                          **Review scope note**: all 8 test files must be included in every review round.
+                          extension-invariants.test.ts in particular covers FSWatcher cleanup on re-activation,
+                          safeSnap workflowDir stripping, GPL-3.0-or-later license, command-id constraints,
+                          and coverage gates — do not omit it from review scope.
+package.json              Manifest: views container, dashboard webview, commands, keybinding, settings.
+media/                    icon.png (tile), icon.svg (source, ignored), activity.svg (activity-bar icon).
+WORKFLOW-AUTHORING.md     Guide shipped in the VSIX; opened via the "Open Workflow Authoring Guide" command.
+README.md                 Marketplace listing source.
+CHANGELOG.md              Keep an entry per release (see "Keep docs in sync").
+LICENSE                   Full GPL-3.0 text.
+docs/DATA-FORMAT.md       Reverse-engineered spec of the journal/transcript format we consume.
+ROADMAP.md                The plan. Start here for feature work.
+.github/workflows/        ci.yml (validate+package), release.yml (tag→publish), nightly.yml (daily pre-release).
+PUBLISHING.md             LOCAL-ONLY release runbook — gitignored, never committed or shipped.
 ```
 
-## Key internals (in `extension.js`, until M0 splits them)
+## Key internals
 
-- `getCfg()` — reads `claudeWorkflow.*` settings; defaults base to
-  `~/.claude/projects`, repo to the first workspace folder.
-- `findWorkflowDir(base)` — recursively finds the newest dir named `wf_*` whose
-  parent dir is named `workflows`. **Only returns the single newest run today.**
-- `jload(p)` — tolerant JSONL parse (skips blank/partial trailing lines).
-- `classify()` / `deriveLabel()` — turn an agent's first user prompt into a role
-  label. `DEFAULT_ROLE_RULES` are currently **hardcoded to the author's crm-notes
-  review loop** and must be replaced with a neutral generic set (M1).
-- `agentStats()` — sums `output_tokens`, counts `tool_use`, builds the activity tail.
-- `buildSnapshot(cfg)` — the heart: returns `{ok, runId, loop, agents, allFindings,
-  structuredResults, verdicts, changed}` or `{ok:false, msg}`.
-- Host wiring: `activate()` registers the sidebar `WebviewView`, the editor panel,
-  commands, the status-bar item, an `fs.watch` on the run dir, and a polling timer.
+- `getCfg()` (`src/extension.ts`) — reads `claudeWorkflow.*` settings; defaults base
+  to `~/.claude/projects`, repo to the first workspace folder.
+- `findWorkflowDir(base)` (`src/data/discovery.ts`) — recursively finds the `wf_*`
+  dir whose parent is named `workflows` with the **highest mtime**. Returns the
+  single globally-newest run with **no date filter**.
+- `jload(p)` (`src/data/parse.ts`) — tolerant JSONL parse (skips blank/partial trailing lines).
+- `classify()` / `deriveLabel()` (`src/data/parse.ts`) — turn an agent's first user
+  prompt into a role label. `DEFAULT_ROLE_RULES` are currently **hardcoded to the
+  author's crm-notes review loop** and must be replaced with a neutral generic set (M1).
+- `agentStats()` (`src/data/parse.ts`) — sums `output_tokens`, counts `tool_use`,
+  builds the activity tail.
+- `buildSnapshot(cfg)` (`src/data/snapshot.ts`) — the heart: returns
+  `{ok, runId, loop, agents, allFindings, structuredResults, verdicts, changed}` or
+  `{ok:false, msg}`.
+- Host wiring: `activate()` (`src/extension.ts`) registers the sidebar `WebviewView`,
+  the editor panel, commands, the status-bar item, an `fs.watch` on the run dir, and
+  a polling timer.
 
 See **docs/DATA-FORMAT.md** for the exact on-disk shapes these rely on.
 
@@ -98,7 +120,25 @@ See **docs/DATA-FORMAT.md** for the exact on-disk shapes these rely on.
 ## Common commands
 
 ```bash
-# Package a VSIX locally (validates the manifest):
+# Build (production, minified) → dist/extension.js:
+npm run build
+
+# Build and watch for changes (source-mapped):
+npm run watch
+
+# Type-check without emitting:
+npm run typecheck
+
+# Lint (typescript-eslint):
+npm run lint
+
+# Run unit tests once:
+npm test
+
+# Run tests with coverage report (90 % gate on src/data/** and src/webview/**):
+npm run coverage
+
+# Package a VSIX locally (validates the manifest; triggers npm run build via vscode:prepublish):
 npx @vscode/vsce package
 
 # Install the built VSIX:
@@ -106,9 +146,6 @@ code --install-extension claude-code-workflow-dashboard-*.vsix --force
 
 # Run the Extension Development Host: press F5 (see .vscode/launch.json).
 ```
-
-After M0 there will also be `npm run build` / `npm test` / `npm run lint` — add
-them here when they exist.
 
 ## Releasing
 

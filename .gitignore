@@ -1,5 +1,6 @@
 node_modules/
 *.vsix
+coverage/
 
 # Local-only release runbook — never committed or published
 PUBLISHING.md

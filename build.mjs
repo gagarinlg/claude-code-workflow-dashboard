@@ -10,8 +10,11 @@ const ENTRY = resolve(__dirname, 'src/extension.ts');
 const OUTFILE = resolve(__dirname, 'dist/extension.js');
 
 if (!existsSync(ENTRY)) {
-  console.log('src/extension.ts not present yet (pre-M0-T2); skipping build');
-  process.exit(0);
+  // Fail loudly if src/extension.ts is absent — a silent exit(0) would let
+  // vsce package proceed and fail later with a cryptic "main entry not found"
+  // error instead of pointing here. M0 made src/extension.ts permanent.
+  console.error('Error: src/extension.ts not found. Check for a bad merge or misconfigured include paths.');
+  process.exit(1);
 }
 
 const watch = process.argv.includes('--watch');
@@ -25,6 +28,10 @@ const buildOptions = {
   external: ['vscode'],
   outfile: OUTFILE,
   minify: !watch,
+  // Production builds omit source maps. Shipping 'external' maps would improve
+  // Extension Host stack traces but adds ~2× bundle size to the VSIX. This is a
+  // conscious trade-off; revisit if minified crash reports become a maintenance
+  // burden.
   sourcemap: watch ? 'inline' : false,
 };
 

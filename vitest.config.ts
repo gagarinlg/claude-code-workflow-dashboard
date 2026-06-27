@@ -4,11 +4,11 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
-    passWithNoTests: true,
     coverage: {
       provider: 'v8',
-      include: ['src/data/**'],
+      include: ['src/data/**', 'src/webview/**'],
       thresholds: {
+        perFile: true,
         lines: 90,
         branches: 90,
         functions: 90,

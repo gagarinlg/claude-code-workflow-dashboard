@@ -2,37 +2,66 @@
   "name": "claude-code-workflow-dashboard",
   "displayName": "Claude Code Workflow Dashboard",
   "description": "Live dashboard for Claude Code workflow runs — loop & agent overview, per-agent output, and review findings, updated in real time. Unofficial community tool, not affiliated with Anthropic.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "malte-langermann",
-  "author": { "name": "Malte Langermann", "email": "malte@langermann.net" },
+  "author": {
+    "name": "Malte Langermann",
+    "email": "malte@langermann.net"
+  },
   "license": "GPL-3.0-or-later",
   "icon": "media/icon.png",
-  "engines": { "vscode": "^1.84.0", "node": ">=18.0.0" },
+  "engines": {
+    "vscode": "^1.84.0",
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "vscode:prepublish": "npm run build",
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "typecheck": "node scripts/typecheck.mjs",
-    "lint": "eslint --no-error-on-unmatched-pattern src test",
+    "lint": "eslint --no-error-on-unmatched-pattern src test build.mjs scripts",
     "test": "vitest run",
     "coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "~1.84.0",
+    "@vitest/coverage-v8": "^3.0.0",
     "esbuild": "^0.25.0",
+    "eslint": "^10.0.0",
+    "eslint-plugin-security": "^4.0.1",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.0.0",
-    "vitest": "^3.0.0",
-    "@vitest/coverage-v8": "^3.0.0"
+    "vitest": "^3.0.0"
   },
-  "categories": ["Visualization", "Other"],
-  "keywords": ["claude", "claude code", "workflow", "agents", "dashboard", "orchestration", "monitor"],
-  "galleryBanner": { "color": "#1b1916", "theme": "dark" },
-  "repository": { "type": "git", "url": "https://github.com/gagarinlg/claude-code-workflow-dashboard.git" },
-  "bugs": { "url": "https://github.com/gagarinlg/claude-code-workflow-dashboard/issues" },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "claude",
+    "claude code",
+    "workflow",
+    "agents",
+    "dashboard",
+    "orchestration",
+    "monitor"
+  ],
+  "galleryBanner": {
+    "color": "#1b1916",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gagarinlg/claude-code-workflow-dashboard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gagarinlg/claude-code-workflow-dashboard/issues"
+  },
   "homepage": "https://github.com/gagarinlg/claude-code-workflow-dashboard#readme",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -121,7 +150,8 @@
         "claudeWorkflow.refreshMs": {
           "type": "number",
           "default": 4000,
-          "description": "Fallback refresh interval in milliseconds. The dashboard also refreshes immediately on workflow file changes."
+          "minimum": 1000,
+          "description": "Fallback polling interval in milliseconds (minimum 1000). Changes take effect on the next polling tick — no reload needed. The dashboard also refreshes immediately on file-system changes."
         },
         "claudeWorkflow.statusBar": {
           "type": "boolean",
@@ -135,9 +165,15 @@
           "items": {
             "type": "object",
             "properties": {
-              "re": { "type": "string" },
-              "label": { "type": "string" },
-              "key": { "type": "string" }
+              "re": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "key": {
+                "type": "string"
+              }
             }
           }
         }

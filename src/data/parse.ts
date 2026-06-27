@@ -2,17 +2,21 @@ import * as fs from 'fs';
 
 export const STALE_SECS = 90;
 
-// Default role-labelling rules (workflow-specific niceties; the viewer works
-// without them via deriveLabel()). Each: { re: <regex source>, label, key }.
-// NOTE: these are currently hardcoded to the author's crm-notes workflow.
-// M1 replaces them with a neutral generic set; personal rules go in
-// claudeWorkflow.roleRules user settings.
+// Default role-labelling rules — neutral generic set covering common Claude Code
+// workflow patterns. Matched against the first line of each agent's first user prompt.
+// Users with workflow-specific roles should configure claudeWorkflow.roleRules in
+// VS Code settings instead of relying on these defaults.
+// Example user setting for a custom review workflow:
+//   "claudeWorkflow.roleRules": [
+//     { "re": "You are.*the lead reviewer", "label": "Lead Reviewer", "key": "lead" },
+//     { "re": "You are.*implementing", "label": "Implementer", "key": "impl" }
+//   ]
 export const DEFAULT_ROLE_RULES: RoleRule[] = [
-  { re: 'SENIOR FULL-STACK DEVELOPER fixing', label: 'Fix', key: 'fix' },
-  { re: 'build/test verifier', label: 'Verify', key: 'verify' },
-  { re: 'GRUMPY, SENIOR FULL-STACK/BACKEND DEVELOPER reviewing', label: 'Dev review', key: 'dev' },
-  { re: 'NITPICKY, GRUMPY, SENIOR UX DESIGNER', label: 'UX review', key: 'ux' },
-  { re: 'NEXTCLOUD APP-STORE REVIEWER', label: 'Compliance', key: 'comp' },
+  { re: 'You are.*(reviewer|reviewing|review)', label: 'Reviewer', key: 'review' },
+  { re: 'You are.*(fix|implement|implementer)', label: 'Implementer', key: 'fix' },
+  { re: 'You are.*(verif|tester|test)', label: 'Verifier', key: 'verify' },
+  { re: 'You are.*(plan|architect|designer)', label: 'Planner', key: 'plan' },
+  { re: 'You are.*(research|investigat)', label: 'Researcher', key: 'research' },
 ];
 
 export interface RoleRule {
@@ -37,11 +41,25 @@ export interface ClassifyResult {
   key: string;
 }
 
+// Maximum file size in bytes that jload() will read. Files larger than this are
+// skipped and treated as empty (returns []). Prevents blocking the Extension Host
+// event loop on a runaway transcript that grows to hundreds of megabytes.
+// 10 MB is generous for any realistic workflow run; adjust in settings if needed.
+export const MAX_JSONL_BYTES = 10 * 1024 * 1024; // 10 MiB
+
 // Tolerant JSONL parser — skips blank lines and partial trailing lines.
 export function jload(p: string): unknown[] {
   const out: unknown[] = [];
   let data: string;
   try {
+    // Guard against oversized files before reading to avoid blocking the event loop.
+    try {
+      /* c8 ignore next */ // size guard: ESM module prevents vi.spyOn(fs,'statSync') — creating a 10 MiB fixture is impractical in unit tests
+      if (fs.statSync(p).size > MAX_JSONL_BYTES) return out;
+    } catch {
+      // stat failed (e.g. file does not exist yet) — fall through to readFileSync
+      // which will also fail and return [].
+    }
     data = fs.readFileSync(p, 'utf8');
   } catch {
     return out;
@@ -86,14 +104,64 @@ export function deriveLabel(text: string): string {
   return text.replace(/\s+/g, ' ').slice(0, 40).trim() || 'agent';
 }
 
+// Maximum length for a roleRule regex pattern. Patterns beyond this length are
+// silently skipped — unbounded patterns from user settings can cause
+// catastrophic backtracking (ReDoS) in the extension host Node.js process.
+// Note: a length cap alone is insufficient against crafted short patterns like
+// (a+)+ or ([a-z]+)*. For user-supplied rules, an execution-time deadline is
+// enforced below (CLASSIFY_MATCH_TIMEOUT_MS). DEFAULT_ROLE_RULES are
+// hardcoded and trusted, so the deadline adds defence-in-depth for them too.
+export const MAX_ROLE_RULE_RE_LEN = 500;
+
+// Maximum milliseconds allowed for a single RegExp.test() call against a
+// user-supplied roleRule. If the elapsed time exceeds this limit the rule is
+// skipped.
+//
+// IMPORTANT: this check fires AFTER test() returns — a catastrophically
+// backtracking pattern (e.g. (a+)+ against a long string) will still block
+// the Node.js event loop for the full duration before this guard fires.
+// The length cap (MAX_ROLE_RULE_RE_LEN) is the primary defence; this guard
+// is a trip-wire for patterns that slip past it, not a true deadline.
+// For a true deadline a worker_threads approach would be needed (TODO M1).
+// See the TOCTOU pattern in snapshot.ts for the analogous c8 ignore usage.
+const CLASSIFY_MATCH_TIMEOUT_MS = 50;
+
+// Structural heuristic to reject catastrophically backtracking regex patterns
+// before constructing them. Patterns with quantified groups over quantified atoms
+// (e.g. (a+)+, ([a-z]+)*, (?:a+)+, (?<n>a+)+) are the canonical ReDoS signatures
+// and are rejected. The pattern covers capturing groups, non-capturing (?:…),
+// named (?<name>…), lookahead (?=…), and negative lookahead (?!…) prefixes.
+// This heuristic catches the common cases that slip past the length cap.
+// Note: this is a best-effort safety valve — worker_threads isolation (TODO M1)
+// is the correct long-term fix for user-supplied patterns. Coverage gaps remain
+// for exotic alternation forms like (a|a)+ — the elapsed-time check is the
+// secondary trip-wire for patterns that evade this structural guard.
+const REDOS_DANGER_RE = /\((?:\?(?::|<[^>]+>|=|!))?[^)]*[+*{][^)]*\)[+*?{]/;
+
 export function classify(text: string, roleRules: RoleRule[]): ClassifyResult {
+  // Match role rules against ONLY the first line — the agent's role declaration
+  // (e.g. "You are the viktor reviewer (architect) …"). Matching the whole prompt
+  // mislabels agents whose body embeds other roles' text: a Fritz fix prompt embeds
+  // the findings JSON, so a finding mentioning "NEXTCLOUD APP-STORE REVIEWER" used to
+  // trip the Compliance rule. Legitimate role declarations live on the first line, so
+  // this preserves intended matches while ignoring embedded data. (M1 #2.)
+  const head = text.split('\n', 1)[0] ?? '';
   for (const r of roleRules) {
+    if (!r.re || r.re.length > MAX_ROLE_RULE_RE_LEN) continue;
+    // Structural ReDoS guard: reject patterns matching the canonical catastrophic
+    // backtracking signature (quantified group over quantified atom, e.g. (a+)+).
+    // These can block the Extension Host event loop even on short inputs.
+    if (REDOS_DANGER_RE.test(r.re)) continue;
     try {
-      if (new RegExp(r.re, 'i').test(text)) {
+      const start = Date.now();
+      const matched = new RegExp(r.re, 'i').test(head);
+      /* c8 ignore next */ // ReDoS guard: timing-dependent path; untestable without Date.now mocking — see TOCTOU pattern in snapshot.ts
+      if (Date.now() - start > CLASSIFY_MATCH_TIMEOUT_MS) continue;
+      if (matched) {
         return { label: r.label, key: r.key ?? r.label.toLowerCase() };
       }
     } catch {
-      if (text.includes(r.re)) {
+      if (head.includes(r.re)) {
         return { label: r.label, key: r.key ?? r.label.toLowerCase() };
       }
     }

@@ -1,7 +1,3 @@
 {"type":"started","agentId":"aaa"}
 {"type":"started","agentId":"bbb"}
 {"type":"started","agentId":"ddd"}
-{"type":"result","agentId":"aaa","result":{"findings":[{"severity":"HIGH","title":"Missing null check","why":"Can crash","fix":"Add guard"},{"severity":"LOW","title":"Nit: rename var","why":"Clarity","fix":"Use descriptive name"}],"verdict":"2 findings"}}
-{"type":"result","agentId":"ccc","result":{"status":"ok","built":true}}
-{"type":"result","agentId":"ddd","result":"Build passed: all 42 tests green"}
-{"type":"result","agentId":"ghost-no-file","result":{"findings":[{"severity":"MEDIUM","title":"Ghost finding","why":"ghost","fix":"none"}],"verdict":"ghost"}}

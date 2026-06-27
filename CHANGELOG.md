@@ -1,5 +1,29 @@
 # Change Log
 
+## 0.5.0
+
+- **TypeScript migration:** converted `extension.js` to TypeScript (`strict` mode)
+  and split it into focused modules: `src/extension.ts` (host wiring),
+  `src/data/discovery.ts`, `src/data/parse.ts`, `src/data/snapshot.ts`,
+  `src/data/changed.ts`, and `src/webview/html.ts`.
+- **Build pipeline:** added `esbuild` via `build.mjs`; `npm run build` produces
+  `dist/extension.js` (CommonJS, minified, `vscode` external). `npm run watch`
+  rebuilds with inline source maps on every change.
+- **Unit tests:** added **vitest** with a 90 % line/branch/function/statement
+  coverage gate on `src/data/**`. Test fixtures cover a basic run, a partial/
+  malformed JSONL run, and the baseline empty state.
+- **Linting:** ESLint flat config (`eslint.config.mjs`) using `typescript-eslint`.
+- **Type-checking:** `npm run typecheck` (tsc `--noEmit` wrapper in
+  `scripts/typecheck.mjs`).
+- **CI update:** `npm ci`, `npm run lint`, `npm run coverage` (90 % gate on
+  `src/data/**` and `src/webview/**`), then `vsce package` in all three workflows
+  (ci / release / nightly).
+- **Security fixes (applied during html.ts migration):** upgraded webview CSP from
+  `unsafe-inline` to a per-load nonce; fixed HTML injection in severity-key rendering
+  (`agentSub`, `findingsPanel` chips and rows); extended `esc()` to escape double- and
+  single-quotes; escaped `a.id` in `data-aid` attribute. No changes to parsing logic
+  or data model — host-to-webview snapshot contract is unchanged.
+
 ## 0.4.0
 
 - Renamed to **Claude Code Workflow Dashboard** (extension id

@@ -5,8 +5,10 @@ name: Nightly
 # users who opt into "Pre-Release" for the extension; stable users are unaffected.
 #
 # The nightly version is <major>.<minor>.<YYYYMMDDHH> (e.g. 0.4.2026062705) so it
-# always sorts above the current stable patch and increases monotonically. The
-# package.json bump is in-memory only and is never committed or tagged.
+# always sorts above the current stable patch and increases monotonically.
+# package.json is bumped on disk by `npm version --no-git-tag-version` but the
+# change is never committed or pushed — it exists only in the runner ephemeral
+# workspace for the duration of this job.
 #
 # Reuses the same secrets as the release workflow: VSCE_PAT (required) and
 # OVSX_PAT (optional).
@@ -24,9 +26,14 @@ jobs:
     name: Publish pre-release
     runs-on: ubuntu-latest
     env:
-      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+      # Non-secret boolean flag: 'true' when the OVSX_PAT secret is set.
+      # OVSX_PAT itself is NOT exposed here — it is scoped only to the
+      # 'Publish to Open VSX (pre-release)' step env block. The flag is used
+      # in the step's if: condition (secrets context is unavailable there).
+      HAS_OVSX_PAT: ${{ secrets.OVSX_PAT != '' }}
     steps:
-      - uses: actions/checkout@v7
+      # Pinned to commit SHA to prevent supply-chain attacks on Marketplace token.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
         with:
           fetch-depth: 0 # need history to detect new commits
 
@@ -40,14 +47,38 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v4
         if: steps.check.outputs.skip != 'true'
         with:
           node-version: 22
+          # npm caching omitted intentionally — nightly runs are infrequent and
+          # always publish fresh artifacts; caching is not worth the complexity.
 
       - name: Install tooling
         if: steps.check.outputs.skip != 'true'
-        run: npm install -g @vscode/vsce ovsx
+        # Pinned to exact versions to prevent supply-chain attacks: a compromised or
+        # future-malicious version of these tools could exfiltrate VSCE_PAT at publish time.
+        run: npm install -g @vscode/vsce@3.3.2 ovsx@0.9.4
+
+      - name: Install dependencies
+        if: steps.check.outputs.skip != 'true'
+        run: npm ci
+
+      - name: Lint
+        if: steps.check.outputs.skip != 'true'
+        run: npm run lint
+
+      - name: Type-check
+        if: steps.check.outputs.skip != 'true'
+        run: npm run typecheck
+
+      - name: Build
+        if: steps.check.outputs.skip != 'true'
+        run: npm run build
+
+      - name: Test with coverage (90 % gate on src/data/** and src/webview/**)
+        if: steps.check.outputs.skip != 'true'
+        run: npm run coverage
 
       - name: Set nightly pre-release version
         if: steps.check.outputs.skip != 'true'
@@ -59,6 +90,20 @@ jobs:
           echo "Publishing nightly pre-release $NIGHTLY"
           npm version --no-git-tag-version "$NIGHTLY"
 
+      - name: Validate nightly version format
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          NIGHTLY="$(node -p "require('./package.json').version")"
+          if ! echo "$NIGHTLY" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]{10}$'; then
+            echo "::error::Unexpected nightly version format: $NIGHTLY (expected MAJOR.MINOR.YYYYMMDDHH)"
+            exit 1
+          fi
+          STAMP="$(echo "$NIGHTLY" | cut -d. -f3)"
+          if [ "$STAMP" -lt 2025000000 ]; then
+            echo "::error::Nightly stamp $STAMP is implausibly old — possible clock anomaly on runner"
+            exit 1
+          fi
+
       - name: Package (pre-release)
         if: steps.check.outputs.skip != 'true'
         run: vsce package --pre-release --out claude-code-workflow-dashboard.vsix
@@ -66,16 +111,21 @@ jobs:
       - name: Publish to VS Code Marketplace (pre-release)
         if: steps.check.outputs.skip != 'true'
         env:
+          # Pass the token as an env var so it does not appear in /proc/<pid>/cmdline.
+          # vsce reads VSCE_PAT from the environment when -p is not supplied.
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: vsce publish --pre-release --packagePath claude-code-workflow-dashboard.vsix -p "$VSCE_PAT"
+        run: vsce publish --pre-release --packagePath claude-code-workflow-dashboard.vsix
 
       - name: Publish to Open VSX (pre-release)
-        if: ${{ steps.check.outputs.skip != 'true' && env.OVSX_PAT != '' }}
-        run: ovsx publish claude-code-workflow-dashboard.vsix --pre-release -p "$OVSX_PAT"
+        if: steps.check.outputs.skip != 'true' && env.HAS_OVSX_PAT == 'true'
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        # ovsx reads OVSX_PAT from the environment when -p is not supplied.
+        run: ovsx publish claude-code-workflow-dashboard.vsix --pre-release
 
       - name: Upload VSIX artifact
         if: steps.check.outputs.skip != 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: nightly-vsix
           path: claude-code-workflow-dashboard.vsix

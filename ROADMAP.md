@@ -28,42 +28,41 @@ parsing/aggregation layer.
 
 ---
 
-## M0 — Foundation: TypeScript + bundler + tests  ⬅ START HERE
+## ✅ M0 — Foundation: TypeScript + bundler + tests  (DONE)
 
 *Goal: make the codebase contributor-ready without changing runtime behavior.*
 
-- [ ] Introduce a build: `esbuild` (or `tsup`) bundling `src/extension.ts` →
-      `dist/extension.js` (CommonJS, external `vscode`). Add `npm run build`
-      (production, minified) and `npm run watch`.
-- [ ] Convert `extension.js` to TypeScript, split into modules:
+- [x] Introduce a build: `esbuild` (via `build.mjs`) bundling `src/extension.ts` →
+      `dist/extension.js` (CommonJS, external `vscode`). `npm run build`
+      (production, minified) and `npm run watch` both work.
+- [x] Convert `extension.js` to TypeScript, split into modules:
   - `src/extension.ts` — activation/host wiring (commands, views, status bar, watcher, timer).
   - `src/data/discovery.ts` — `findWorkflowDir` (+ future recent-runs listing).
   - `src/data/parse.ts` — `jload`, `firstUserText`, `deriveLabel`, `classify`, `agentStats`, `sevCounts`.
   - `src/data/snapshot.ts` — `buildSnapshot` + the `Snapshot` types (mirror docs/DATA-FORMAT.md).
   - `src/data/changed.ts` — `walkChanged`.
   - `src/webview/html.ts` — the `getHtml()` template + client script.
-- [ ] Add `tsconfig.json` (strict), ESLint (flat config, `@typescript-eslint`),
-      and `npm run lint`.
-- [ ] Add **vitest** unit tests for the pure functions, with fixtures: a sample
+- [x] Add `tsconfig.json` (strict), ESLint flat config (`eslint.config.mjs`,
+      `typescript-eslint`), and `npm run lint`.
+- [x] Add **vitest** unit tests for the pure functions, with fixtures: a sample
       `wf_*` dir (findings result, structured result, string result, a live agent,
       a dead agent, a malformed/partial JSONL line, a missing `meta.json`). Assert
       `buildSnapshot` output matches docs/DATA-FORMAT.md and that malformed input
-      never throws.
-- [ ] Update `package.json`: `"main": "./dist/extension.js"`, add
-      `"vscode:prepublish": "npm run build"`, scripts, devDeps. Add `dist/` to
-      `.vscodeignore`? **No** — `dist/extension.js` MUST ship; instead ensure
-      `src/`, `node_modules` dev stuff, tests, and config are ignored from the VSIX.
-- [ ] Update CI (`.github/workflows/ci.yml`): `npm ci`, `npm run lint`, `npm test`,
-      then `vsce package`. Update nightly/release similarly (build before package).
+      never throws. 90 % coverage gate on `src/data/**`.
+- [x] Update `package.json`: `"main": "./dist/extension.js"`, `"vscode:prepublish":
+      "npm run build"`, all scripts and devDeps. `src/`, tests, and config are
+      excluded from the VSIX; `dist/extension.js` ships.
+- [x] Update CI (`.github/workflows/ci.yml`): `npm ci`, `npm run lint`, `npm test`,
+      then `vsce package`. Nightly and release workflows updated similarly.
 
 **Acceptance:** `npm run build && npm test && npm run lint` all pass; `vsce package`
-produces a VSIX whose `dist/extension.js` behaves identically to today (F5 the
-dev host against a real run and confirm parity); the VSIX does **not** contain
-`src/`, tests, or `.github/`.
+produces a VSIX whose `dist/extension.js` behaves identically to the original
+(F5 dev-host parity — human gate, M0-T7); the VSIX does **not** contain `src/`,
+tests, or `.github/`.
 
 ---
 
-## M1 — Robustness & navigation
+## M1 — Robustness & navigation  ⬅ START HERE
 
 *Goal: it behaves well on a stranger's machine and across many runs.*
 
@@ -81,9 +80,41 @@ dev host against a real run and confirm parity); the VSIX does **not** contain
       / plan. The author's crm-notes rules move to personal `claudeWorkflow.roleRules`
       (document this in the release notes). Auto-derivation stays the fallback.
 
+### Discovered during M0 dogfooding (detail in `.review-tmp/implementation-plan.md`)
+
+- [ ] **Agent naming via `agentType` (M1-Naming)** — derive role labels from the reliable
+      `agentType` in `agent-<id>.meta.json` (implementer→Implement/Fix, architect→Architecture,
+      code-reviewer→Code review, security-reviewer→Security, uiux-reviewer→UI/UX,
+      test-verifier→Verify, completeness-critic→Completeness; strip the `workflow-plugins:`
+      namespace). `buildSnapshot` already opens `meta.json` for `start`. Prompt regex +
+      `roleRules` become the FALLBACK only. **This supersedes the prompt-matching tactic** —
+      regex-on-prompt collapses all reviewers to "reviewer" and even mislabels implementers.
+- [ ] **Pass-numbering fix (M1-Naming side-effect)** — `buildSnapshot` computes `pass` as a
+      per-`key` counter, so today (all reviewers share one key) the 4 reviewers in ONE round
+      show as 4 different passes. Distinct per-`agentType` keys make `pass` = the review round
+      per reviewer. AC: one round → same pass for all reviewers; same reviewer across rounds
+      increments.
+- [ ] **Sidebar UX (M1-SidebarUX)** — the sidebar webview crams the whole dashboard into the
+      activity-bar pane. Render a compact summary in the sidebar (`mode:'sidebar'`) + a
+      prominent "⤢ Open full dashboard" button (posts `{type:'openFull'}` → `claudeWorkflow.open`)
+      + a `view/title` icon. (An activity-bar icon can't open an editor tab directly — hence
+      the button, decided with the user.)
+- [ ] **Clear-filters availability (M1-ClearFilters)** — move the findings-panel "Clear filters"
+      button out of the empty-result branch so it shows whenever ANY chip is off (use the
+      existing `anyOff` flag), not only when the (sole) reviewer chip empties the list.
+
 **Acceptance:** launching with no runs shows the empty state (no errors in the
 Extension Host log); a malformed journal still renders; switching among ≥2 recent
-runs works; default labels are generic and sensible on a non-author workflow.
+runs works; agent labels are correct and distinct (reviewers by specialty, implementers
+as Implement/Fix — never a generic "reviewer"); one review round shows one pass number.
+
+> **Before starting M1:** restart Claude Code so the `workflow-plugins` plugin reloads at
+> **v4.6.1** (verify-first review order). Also: **do not edit the working tree while a
+> `workflow-live` run is active** — concurrent edits made the M0 review loops fail to
+> converge (reviewers chase a moving target). Freeze the tree per run.
+
+> **M2 note:** **M2-AgentFold** — give agent cards an explicit fold/unfold chevron (collapse
+> output/activity tail; persist per-card state; Collapse-all/Expand-all). See M2 + the plan.
 
 ---
 

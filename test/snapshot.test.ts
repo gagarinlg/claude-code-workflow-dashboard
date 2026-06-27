@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -36,35 +36,41 @@ describe('buildSnapshot — no run found', () => {
   });
 });
 
-// Point at a wf_basic-equivalent in the base/ tree. Since base/ only has
-// empty journals (no agent files), we need a more complete fixture.
-// We point the cfg at a base that holds wf_basic via a custom layout.
+// Build a temp base that mirrors the correct discovery structure:
+//   <tmpBase>/proj-abc/subagents/workflows/wf_basic_copy/
+// We copy wf_basic's files into that dir so buildSnapshot gets a rich fixture.
+// The committed wf_newer fixture is NOT mutated — it stays immutable for
+// discovery.test.ts, which relies on it representing an empty/older run.
 describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
-  // Build a temp base pointing to wf_basic by symlinking it under a workflows dir.
-  // Instead: pass a cfg that has wf_basic as base but override findWorkflowDir
-  // by creating the right fixture structure at test time.
-  //
-  // Simplest approach: create a temp 'workflows/' dir in test/fixtures/wf_basic_base/
-  // and symlink/copy wf_basic into it.
-  // Since we want no external deps and no symlinks, we copy the fixture files.
-
   const wfBasicSrc = path.join(FIXTURES, 'wf_basic');
-  // We already have base/proj-abc/subagents/workflows/wf_newer — but it's sparse.
-  // Copy wf_basic files into wf_newer for a richer test.
-  const wfNewerDir = path.join(BASE, 'proj-abc/subagents/workflows/wf_newer');
+  let tmpBase: string;
+  let snapshotCfg: Cfg;
 
-  it('setup: copies wf_basic content into wf_newer', () => {
+  beforeAll(() => {
+    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'snap-wf-basic-'));
+    const wfDir = path.join(tmpBase, 'proj-abc', 'subagents', 'workflows', 'wf_basic_copy');
+    fs.mkdirSync(wfDir, { recursive: true });
     for (const f of fs.readdirSync(wfBasicSrc)) {
-      fs.copyFileSync(path.join(wfBasicSrc, f), path.join(wfNewerDir, f));
+      fs.copyFileSync(path.join(wfBasicSrc, f), path.join(wfDir, f));
     }
-    // Re-touch the dir so it's still newest
+    // Ensure this dir is the newest wf_* by touching it after copy.
     const now = new Date();
-    fs.utimesSync(wfNewerDir, now, now);
-    expect(true).toBe(true); // setup complete
+    fs.utimesSync(wfDir, now, now);
+    snapshotCfg = {
+      base: tmpBase,
+      repo: '',
+      refreshMs: 4000,
+      statusBar: true,
+      roleRules: DEFAULT_ROLE_RULES,
+    };
+  });
+
+  afterAll(() => {
+    try { fs.rmSync(tmpBase, { recursive: true, force: true }); } catch {}
   });
 
   it('returns ok:true with correct shape', () => {
-    const result = buildSnapshot(basicCfg);
+    const result = buildSnapshot(snapshotCfg);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const snap = result as SnapshotOk;
@@ -81,7 +87,7 @@ describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
   });
 
   it('loop has required numeric fields', () => {
-    const result = buildSnapshot(basicCfg);
+    const result = buildSnapshot(snapshotCfg);
     if (!result.ok) return;
     const { loop } = result;
     expect(typeof loop.live).toBe('number');
@@ -96,7 +102,7 @@ describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
   });
 
   it('agents are sorted by start time and have idx', () => {
-    const result = buildSnapshot(basicCfg);
+    const result = buildSnapshot(snapshotCfg);
     if (!result.ok) return;
     const { agents } = result;
     expect(agents.length).toBeGreaterThan(0);
@@ -107,7 +113,7 @@ describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
   });
 
   it('findings result agent has findings array and verdict', () => {
-    const result = buildSnapshot(basicCfg);
+    const result = buildSnapshot(snapshotCfg);
     if (!result.ok) return;
     const agentWithFindings = result.agents.find((a) => Array.isArray(a.findings));
     expect(agentWithFindings).toBeDefined();
@@ -117,14 +123,14 @@ describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
   });
 
   it('structured result agent has result object', () => {
-    const result = buildSnapshot(basicCfg);
+    const result = buildSnapshot(snapshotCfg);
     if (!result.ok) return;
     const agentWithResult = result.agents.find((a) => a.result != null);
     expect(agentWithResult).toBeDefined();
   });
 
   it('allFindings contains reviewer and key fields', () => {
-    const result = buildSnapshot(basicCfg);
+    const result = buildSnapshot(snapshotCfg);
     if (!result.ok) return;
     for (const f of result.allFindings) {
       expect(typeof f.reviewer).toBe('string');
@@ -134,7 +140,7 @@ describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
   });
 
   it('sevTotals reflects allFindings severities', () => {
-    const result = buildSnapshot(basicCfg);
+    const result = buildSnapshot(snapshotCfg);
     if (!result.ok) return;
     if (result.allFindings.length === 0) return;
     const computedTotal = Object.values(result.loop.sevTotals).reduce((a, b) => a + b, 0);
@@ -142,20 +148,19 @@ describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
   });
 
   it('changed is null when repo is empty string', () => {
-    const result = buildSnapshot({ ...basicCfg, repo: '' });
+    const result = buildSnapshot({ ...snapshotCfg, repo: '' });
     if (!result.ok) return;
     expect(result.changed).toBeNull();
   });
 
   it('does not throw on malformed/partial JSONL input', () => {
-    // agent-partial.jsonl is in wf_partial, not wf_newer, so this tests
-    // that buildSnapshot never throws — we just call it again
-    expect(() => buildSnapshot(basicCfg)).not.toThrow();
+    // Verify buildSnapshot never throws even on repeated calls
+    expect(() => buildSnapshot(snapshotCfg)).not.toThrow();
   });
 
   it('missing meta.json falls back to transcript mtime gracefully', () => {
-    // No .meta.json files in wf_newer — start should fall back to agent jsonl mtime
-    const result = buildSnapshot(basicCfg);
+    // No .meta.json files in wf_basic_copy — start should fall back to agent jsonl mtime
+    const result = buildSnapshot(snapshotCfg);
     if (!result.ok) return;
     for (const a of result.agents) {
       expect(typeof a.start).toBe('number');
@@ -165,7 +170,7 @@ describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
 
   it('stale agent detection: status is dead for very old mtime', () => {
     // We can verify that the status field is one of the three valid values
-    const result = buildSnapshot(basicCfg);
+    const result = buildSnapshot(snapshotCfg);
     if (!result.ok) return;
     for (const a of result.agents) {
       expect(['run', 'done', 'dead']).toContain(a.status);
@@ -173,7 +178,7 @@ describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
   });
 
   it('agents with done status have their result populated from journal', () => {
-    const result = buildSnapshot(basicCfg);
+    const result = buildSnapshot(snapshotCfg);
     if (!result.ok) return;
     const doneAgents = result.agents.filter((a) => a.status === 'done');
     for (const a of doneAgents) {
@@ -183,7 +188,7 @@ describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
   });
 
   it('string result agent has resultText populated', () => {
-    const result = buildSnapshot(basicCfg);
+    const result = buildSnapshot(snapshotCfg);
     if (!result.ok) return;
     const textAgent = result.agents.find((a) => a.resultText !== undefined);
     expect(textAgent).toBeDefined();
@@ -193,10 +198,23 @@ describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
   });
 
   it('labels contains reviewer label from findings results', () => {
-    const result = buildSnapshot(basicCfg);
+    const result = buildSnapshot(snapshotCfg);
     if (!result.ok) return;
     if (result.allFindings.length === 0) return;
     expect(result.labels.length).toBeGreaterThan(0);
+  });
+
+  it('ghost agent result appears in allFindings even with no transcript file', () => {
+    // journal.jsonl contains a result record for agentId 'ghost-no-file' that has
+    // no corresponding agent-ghost-no-file.jsonl transcript. The snapshot must still
+    // include this agent's findings in allFindings (using reviewer='agent', key='?')
+    // while 'ghost-no-file' must be absent from the agents array.
+    const result = buildSnapshot(snapshotCfg);
+    if (!result.ok) return;
+    const ghostFinding = result.allFindings.find((f) => f.title === 'Ghost finding');
+    expect(ghostFinding).toBeDefined();
+    const ghostAgent = result.agents.find((a) => a.id === 'ghost-no-file');
+    expect(ghostAgent).toBeUndefined();
   });
 
 });
