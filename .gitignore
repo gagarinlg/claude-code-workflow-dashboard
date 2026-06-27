@@ -1,0 +1,10 @@
+node_modules/
+*.vsix
+
+# Local-only release runbook — never committed or published
+PUBLISHING.md
+*.log
+.DS_Store
+.vscode-test/
+out/
+dist/

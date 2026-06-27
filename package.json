@@ -1,0 +1,129 @@
+{
+  "name": "claude-code-workflow-dashboard",
+  "displayName": "Claude Code Workflow Dashboard",
+  "description": "Live dashboard for Claude Code workflow runs — loop & agent overview, per-agent output, and review findings, updated in real time.",
+  "version": "0.4.0",
+  "publisher": "gagarinlg",
+  "author": { "name": "Malte Langermann", "email": "malte@langermann.net" },
+  "license": "GPL-3.0-or-later",
+  "icon": "media/icon.png",
+  "engines": { "vscode": "^1.84.0" },
+  "categories": ["Visualization", "Other"],
+  "keywords": ["claude", "claude code", "workflow", "agents", "dashboard", "orchestration", "monitor"],
+  "galleryBanner": { "color": "#1b1916", "theme": "dark" },
+  "repository": { "type": "git", "url": "https://github.com/gagarinlg/claude-code-workflow-dashboard.git" },
+  "bugs": { "url": "https://github.com/gagarinlg/claude-code-workflow-dashboard/issues" },
+  "homepage": "https://github.com/gagarinlg/claude-code-workflow-dashboard#readme",
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudeWorkflow",
+          "title": "Claude Code Workflow Dashboard",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudeWorkflow": [
+        {
+          "id": "claudeWorkflow.dashboard",
+          "name": "Dashboard",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudeWorkflow.open",
+        "title": "Open Dashboard in Editor",
+        "category": "Claude Code Workflow",
+        "icon": "$(window)"
+      },
+      {
+        "command": "claudeWorkflow.focus",
+        "title": "Show Dashboard",
+        "category": "Claude Code Workflow",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "claudeWorkflow.refresh",
+        "title": "Refresh",
+        "category": "Claude Code Workflow",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeWorkflow.openGuide",
+        "title": "Open Workflow Authoring Guide",
+        "category": "Claude Code Workflow",
+        "icon": "$(book)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "claudeWorkflow.openGuide",
+          "when": "view == claudeWorkflow.dashboard",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeWorkflow.open",
+          "when": "view == claudeWorkflow.dashboard",
+          "group": "navigation@2"
+        },
+        {
+          "command": "claudeWorkflow.refresh",
+          "when": "view == claudeWorkflow.dashboard",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "claudeWorkflow.focus",
+        "key": "ctrl+alt+w",
+        "mac": "cmd+alt+w"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Code Workflow Dashboard",
+      "properties": {
+        "claudeWorkflow.workflowsGlobBase": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Base directory searched recursively for the newest `wf_*` workflow run. Leave empty to use `~/.claude/projects` (auto-discovers the most recent run across all projects)."
+        },
+        "claudeWorkflow.repoDir": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional repository path; when set, the **Changed files** panel lists files modified there in the last 2 minutes. Leave empty to use the first open workspace folder."
+        },
+        "claudeWorkflow.refreshMs": {
+          "type": "number",
+          "default": 4000,
+          "description": "Fallback refresh interval in milliseconds. The dashboard also refreshes immediately on workflow file changes."
+        },
+        "claudeWorkflow.statusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a live status-bar item with the current workflow phase and agent counts. Click it to open the dashboard."
+        },
+        "claudeWorkflow.roleRules": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "Optional rules to label agents per workflow: an array of `{ \"re\": \"<regex>\", \"label\": \"<name>\", \"key\": \"<id>\" }`. Each rule matches against an agent's first prompt. Without rules, labels are derived automatically from each prompt (\"You are a …\").",
+          "items": {
+            "type": "object",
+            "properties": {
+              "re": { "type": "string" },
+              "label": { "type": "string" },
+              "key": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

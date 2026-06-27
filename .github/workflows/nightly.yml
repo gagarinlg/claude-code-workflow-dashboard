@@ -1,0 +1,82 @@
+name: Nightly
+
+# Publishes a Marketplace/Open VSX *pre-release* build once a day, but only when
+# there have been new commits in the last 24h. Pre-releases are installed only by
+# users who opt into "Pre-Release" for the extension; stable users are unaffected.
+#
+# The nightly version is <major>.<minor>.<YYYYMMDDHH> (e.g. 0.4.2026062705) so it
+# always sorts above the current stable patch and increases monotonically. The
+# package.json bump is in-memory only and is never committed or tagged.
+#
+# Reuses the same secrets as the release workflow: VSCE_PAT (required) and
+# OVSX_PAT (optional).
+
+on:
+  schedule:
+    - cron: "0 5 * * *" # 05:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nightly:
+    name: Publish pre-release
+    runs-on: ubuntu-latest
+    env:
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need history to detect new commits
+
+      - name: Skip if no new commits in the last 24h
+        id: check
+        run: |
+          if [ -z "$(git log --since='24 hours ago' --oneline)" ]; then
+            echo "No new commits in the last 24h; skipping nightly."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.skip != 'true'
+        with:
+          node-version: 20
+
+      - name: Install tooling
+        if: steps.check.outputs.skip != 'true'
+        run: npm install -g @vscode/vsce ovsx
+
+      - name: Set nightly pre-release version
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          BASE="$(node -p "require('./package.json').version")"
+          MAJORMINOR="$(echo "$BASE" | cut -d. -f1,2)"
+          STAMP="$(date -u +%Y%m%d%H)"
+          NIGHTLY="${MAJORMINOR}.${STAMP}"
+          echo "Publishing nightly pre-release $NIGHTLY"
+          npm version --no-git-tag-version "$NIGHTLY"
+
+      - name: Package (pre-release)
+        if: steps.check.outputs.skip != 'true'
+        run: vsce package --pre-release --out claude-code-workflow-dashboard.vsix
+
+      - name: Publish to VS Code Marketplace (pre-release)
+        if: steps.check.outputs.skip != 'true'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: vsce publish --pre-release --packagePath claude-code-workflow-dashboard.vsix -p "$VSCE_PAT"
+
+      - name: Publish to Open VSX (pre-release)
+        if: ${{ steps.check.outputs.skip != 'true' && env.OVSX_PAT != '' }}
+        run: ovsx publish claude-code-workflow-dashboard.vsix --pre-release -p "$OVSX_PAT"
+
+      - name: Upload VSIX artifact
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-vsix
+          path: claude-code-workflow-dashboard.vsix
+          if-no-files-found: error
