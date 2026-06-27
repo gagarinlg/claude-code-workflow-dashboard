@@ -1,0 +1,3 @@
+{"type":"user","message":{"content":"SENIOR FULL-STACK DEVELOPER fixing all findings"}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"path":"/foo/bar.ts"}},{"type":"text","text":"Looking at the code now"}],"usage":{"output_tokens":150}}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Done fixing the issues"}],"usage":{"output_tokens":80}}}

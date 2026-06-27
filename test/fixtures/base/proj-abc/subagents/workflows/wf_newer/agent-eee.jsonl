@@ -1,0 +1,2 @@
+{"type":"user","message":{"content":"You are a live running agent"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Still working on it"}],"usage":{"output_tokens":10}}}

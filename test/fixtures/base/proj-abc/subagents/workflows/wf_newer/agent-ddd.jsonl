@@ -1,0 +1,2 @@
+{"type":"user","message":{"content":"You are a text result reporter"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"All tests passed"}],"usage":{"output_tokens":20}}}

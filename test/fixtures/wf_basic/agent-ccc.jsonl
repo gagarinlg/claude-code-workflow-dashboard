@@ -1,0 +1,2 @@
+{"type":"user","message":{"content":"You are a structured result agent"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Running build"}],"usage":{"output_tokens":30}}}

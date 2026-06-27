@@ -1,13 +1,31 @@
 {
   "name": "claude-code-workflow-dashboard",
   "displayName": "Claude Code Workflow Dashboard",
-  "description": "Live dashboard for Claude Code workflow runs — loop & agent overview, per-agent output, and review findings, updated in real time.",
+  "description": "Live dashboard for Claude Code workflow runs — loop & agent overview, per-agent output, and review findings, updated in real time. Unofficial community tool, not affiliated with Anthropic.",
   "version": "0.4.0",
   "publisher": "malte-langermann",
   "author": { "name": "Malte Langermann", "email": "malte@langermann.net" },
   "license": "GPL-3.0-or-later",
   "icon": "media/icon.png",
-  "engines": { "vscode": "^1.84.0" },
+  "engines": { "vscode": "^1.84.0", "node": ">=18.0.0" },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "node scripts/typecheck.mjs",
+    "lint": "eslint --no-error-on-unmatched-pattern src test",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "~1.84.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^3.0.0",
+    "@vitest/coverage-v8": "^3.0.0"
+  },
   "categories": ["Visualization", "Other"],
   "keywords": ["claude", "claude code", "workflow", "agents", "dashboard", "orchestration", "monitor"],
   "galleryBanner": { "color": "#1b1916", "theme": "dark" },
@@ -15,7 +33,7 @@
   "bugs": { "url": "https://github.com/gagarinlg/claude-code-workflow-dashboard/issues" },
   "homepage": "https://github.com/gagarinlg/claude-code-workflow-dashboard#readme",
   "activationEvents": ["onStartupFinished"],
-  "main": "./extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
       "activitybar": [

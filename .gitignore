@@ -8,3 +8,4 @@ PUBLISHING.md
 .vscode-test/
 out/
 dist/
+.review-tmp/
