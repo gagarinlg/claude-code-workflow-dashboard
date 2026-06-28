@@ -2,6 +2,51 @@
 
 ## [0.7.0] — 2026-06-28
 
+### M2-Layout — Tabbed information architecture
+
+- **Tabbed panel layout** replacing the 7-checkbox panel toggle bar: six tabs
+  (Agents, Findings, Verdicts, Changed, Charts, Results) below an always-visible
+  **Overview strip**. Only the active tab is rendered; scroll position per tab is
+  captured and restored via `api.setState`.
+- **Disabled tabs** (no data) shown at opacity 0.35 with `aria-disabled`; active
+  tab falls back to Agents if its tab becomes disabled.
+- **WAI-ARIA tabs pattern** (`role=tab/tablist/tabpanel`): roving `tabindex`,
+  ArrowLeft/Right/Home/End navigation, Enter/Space activation. Active tab signalled
+  by a 2 px `--vscode-focusBorder` bottom border + font-weight, never by color
+  alone.
+- **Findings pagination:** 131-item lists become 50-item pages with Prev/Next
+  controls above and below the list; page resets to 0 on any filter change.
+- Tab badges showing agent/finding counts; no in-tab `.panel` card wrappers (tab
+  label is the section title).
+
+### M2-TypedResults-Generic
+
+- **Field-driven generic result renderer** (`renderTypedResult` in
+  `src/webview/js-panels.ts`): renders any agent's structured result by **field
+  pattern** rather than a per-`agentType` switch, so it handles current and future
+  agent types without code changes.
+  - `verdict` field → status badge (APPROVED → ok; `*WORK*`/FAIL/REJECT → bad;
+    else neutral).
+  - `findings[]` → severity-sorted findings list (reuses the Findings tab renderer).
+  - `summary` string → `##`/`###` section parse (What Was Built / Files Changed
+    table / Test Results / Status badge) when structured, else plain text.
+  - `filesChanged[]` → file list with count.
+  - Boolean flags matching `/Ok$|^testsRun$|passed/` → ✓/✗ chips.
+  - `failures[]`/`gaps[]` → bullet list (empty → "none").
+  - Numeric counts → labelled value.
+  - All other unknown keys → key-value table, never a bare JSON dump.
+  - Raw JSON in a collapsed `<details>` below the typed view.
+  - Entire renderer wrapped in `try/catch`; any error falls back silently to
+    collapsed raw text — never throws into the webview.
+
+### Screenshot harness
+
+- **`npm run screenshots`** (`scripts/screenshot.mjs`): bundles `getHtml()` +
+  `buildSnapshot()` via esbuild, renders the real webview HTML in headless
+  Playwright/Chromium against the newest local run (or a synthetic fallback),
+  and writes PNGs to `.review-tmp/shots/`. Use this to visually verify layout
+  changes before review.
+
 ### M2-Metrics
 
 - **Per-agent token + tool-call metrics bar** in every agent card (output tokens,
@@ -65,6 +110,29 @@
   for consistency and to match the stated CSP-safe wiring convention.
 - Inline styles for the pinned-run badge and the Results panel scroll container
   extracted to named CSS classes (`.pinned-badge`, `.sb-pinned-badge`, `.result-body`).
+
+### Dogfooding polish (v3 corrections)
+
+- **Changed tab always enabled** — the Changed tab is no longer disabled when
+  `snap.changed` is empty; it remains reachable to show agent-reported files.
+- **Raw-JSON deduplication** — `<details>` raw JSON is owned exclusively by
+  `renderTypedResult`; `resultsPanel` never appends a second copy.
+- **`openRaw` persistence** — open/closed state of raw-JSON `<details>` blocks is
+  preserved in `api.setState` across snapshot re-renders (analogous to `openPrompt`).
+- **Tab-bar breathing room** — `padding-top` on `#tab-content` prevents the first
+  item from crowding the tab bar.
+- **`changedByAgents` aggregated from agent `filesChanged` fields** — `buildSnapshot`
+  now unions `filesChanged[]` from every agent's structured result and exposes the
+  deduplicated sorted list as `snap.changedByAgents`; the Changed tab uses this as
+  the primary source (mtime scan as secondary). Markdown export also includes it.
+- **mtime window widened to 15 minutes** — `CHANGED_MAX_SECS` increased from 120 s
+  to 900 s so files changed during a long review pass remain visible.
+- **Generic section handling in implementer markdown** — `parseImplementerMarkdown`
+  now renders every `##`/`###` section generically (no hardcoded allow-list) with
+  inline markdown (bullet lists, bold, code spans) and no aggressive truncation.
+- **Sidebar shows agent-reported files** — the sidebar Changed section uses
+  `changedByAgents` as its primary source, falling back to the mtime scan, so
+  completed runs still show file activity.
 
 ## [0.6.0] — 2026-06-28
 

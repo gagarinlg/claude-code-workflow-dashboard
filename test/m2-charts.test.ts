@@ -15,47 +15,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { getHtml } from '../src/webview/html';
-
-const TEST_NONCE = 'dGVzdG5vbmNlMTIz';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Extract the inline <script> content from the panel-mode HTML. */
-function getPanelJs(html: string): string {
-  const scriptOpen = `<script nonce="${TEST_NONCE}">`;
-  const scriptClose = '</script>';
-  const scriptStart = html.indexOf(scriptOpen);
-  const scriptEnd = html.lastIndexOf(scriptClose);
-  return html.slice(scriptStart + scriptOpen.length, scriptEnd);
-}
-
-/**
- * Extract a balanced function declaration from a minified JS string.
- * Finds "function <name>(" then walks forward counting braces until
- * the top-level closing brace is found. Returns only that function.
- *
- * This handles minified JS where multiple functions appear on one line.
- */
-function extractBalancedFn(js: string, name: string): string {
-  const marker = `function ${name}(`;
-  const start = js.indexOf(marker);
-  if (start === -1) throw new Error(`${name} not found in webview JS`);
-  let depth = 0;
-  let i = start;
-  let bodyStarted = false;
-  while (i < js.length) {
-    const ch = js[i];
-    if (ch === '{') { depth++; bodyStarted = true; }
-    else if (ch === '}') {
-      depth--;
-      if (bodyStarted && depth === 0) { return js.slice(start, i + 1); }
-    }
-    i++;
-  }
-  throw new Error(`${name}: could not find balanced closing brace`);
-}
+import { getPanelJs, extractBalancedFn, TEST_NONCE } from './helpers/webview';
 
 /**
  * Build a harness that evaluates the three chart functions plus their helpers
@@ -72,21 +32,19 @@ function buildChartsHarness(js: string): (snap: object) => string {
   const escClsFn = extractBalancedFn(js, 'escCls');
   const safeNFn = extractBalancedFn(js, 'safeN');
   const fmtTokFn = extractBalancedFn(js, 'fmtTok');
-  const panelFn = extractBalancedFn(js, 'panel');
   const barFn = extractBalancedFn(js, 'tokenBarChart');
   const trendFn = extractBalancedFn(js, 'tokenTrendChart');
   const chartsPanelFn = extractBalancedFn(js, 'chartsPanel');
 
-  // Wrap all in a factory. We inject `snap` and `state` as closed-over variables.
-  // `state` must be provided because panel() now reads state.panelOpen for collapse state.
+  // chartsPanel() renders directly (v3 BINDING — no panel() wrapper), so snap is
+  // the only closed-over variable needed. The panelOpen stub was removed alongside
+  // the panel() extraction (TODO(M3)-tracked dead code).
   const factory = new Function(
     'snap',
-    'state',
-    `${escFn}\n${escClsFn}\n${safeNFn}\n${fmtTokFn}\n${panelFn}\n${barFn}\n${trendFn}\n${chartsPanelFn}\nreturn chartsPanel();`,
-  ) as (snap: object, state: object) => string;
+    `${escFn}\n${escClsFn}\n${safeNFn}\n${fmtTokFn}\n${barFn}\n${trendFn}\n${chartsPanelFn}\nreturn chartsPanel();`,
+  ) as (snap: object) => string;
 
-  // Bind a default state stub (charts expanded) so callers don't need to pass it.
-  return (snap: object) => factory(snap, { panelOpen: { charts: 1 } });
+  return (snap: object) => factory(snap);
 }
 
 /** Build a synthetic agent array of size n with specified token counts. */
@@ -130,16 +88,16 @@ function makeSnap(agents: object[]): object {
 // PANELS registration
 // ---------------------------------------------------------------------------
 describe('M2-Charts — PANELS registration', () => {
-  it('PANELS array includes a "charts" entry', () => {
+  it('M3-Layout: Charts tab key is present in tabDefs() — chartsPanel() is wired via tabContent()', () => {
     const html = getHtml(TEST_NONCE);
-    // PANELS is defined as a JS array literal at the top of the script
-    expect(html).toContain("'charts','Charts'");
+    // M3: PANELS array replaced by tabDefs(). Charts tab key must be present.
+    expect(html).toContain("key:'charts'");
   });
 
-  it('state initializer includes charts:0 in on map (charts hidden by default to reduce scroll distance)', () => {
+  it('M3-Layout: state initializer does NOT include charts:0 (M3 v3: Charts renders directly, no panelOpen)', () => {
     const html = getHtml(TEST_NONCE);
-    // Charts default to hidden (0) — toggled on by user. See finding 18 fix.
-    expect(html).toContain('charts:0');
+    // M3 v3 BINDING (AC11): panelOpen.charts is dropped. charts:0 no longer appears in the state initializer.
+    expect(html).not.toContain('charts:0');
   });
 
   it('render() calls chartsPanel() when charts panel is on and agents exist', () => {
@@ -233,8 +191,10 @@ describe('M2-Charts — tokenBarChart with 1 agent', () => {
     expect(output).toContain('data-testid="bar-chart-scroll"');
   });
 
-  it('output contains the panel heading "Charts"', () => {
-    expect(output).toContain('Charts');
+  it('M3-Layout: output contains charts-row (no panel heading — M3 v3 renders directly)', () => {
+    // M3 v3 BINDING (AC10): chartsPanel() renders content directly without panel() wrapper.
+    // The word "Charts" no longer appears as a panel heading; the charts-row container is present.
+    expect(output).toContain('charts-row');
   });
 
   it('chart uses --vscode-charts-blue for bar fill', () => {

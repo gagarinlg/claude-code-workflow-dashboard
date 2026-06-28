@@ -118,7 +118,7 @@ as Implement/Fix — never a generic "reviewer"); one review round shows one pas
 
 ---
 
-## ✅ M2 — Metrics + Markdown export  (DONE)
+## ✅ M2 — Metrics + Markdown export + Layout  (DONE)
 
 *Goal: quantify a run and get it out of the editor. **No pricing.***
 
@@ -195,7 +195,7 @@ as Implement/Fix — never a generic "reviewer"); one review round shows one pas
         when the headings are absent or malformed — **must never throw on shape mismatch**
         (defensive parsing rule). Add a test feeding a non-conforming summary asserting it
         renders as text without error.
-- [ ] **Generic field-driven result renderer (M2-TypedResults-Generic):** rebuild
+- [x] **Generic field-driven result renderer (M2-TypedResults-Generic):** rebuild
       `renderTypedResult` to be driven by the result's **fields**, not a per-`agentType`
       switch, so it works for every current agent AND any future/variant agent. Empirical
       result shapes (from the actual run journals the dashboard consumes):
@@ -217,15 +217,22 @@ as Implement/Fix — never a generic "reviewer"); one review round shows one pas
       the webview). `esc()` every value; theme-native. Tests: each known shape renders its
       typed view; an unknown-agentType/extra-fields object renders via the generic
       key-value fallback; a malformed/throwing input falls back silently without error.
-- [x] **Reduce vertical sprawl / information architecture (M2-Layout):** Results panel
-      hidden by default and moved to end of PANELS; Collapse-all / Expand-all button
-      with dynamic label; card fold state persists.
+- [x] **Reduce vertical sprawl / information architecture (M2-Layout):** Full tabbed
+      layout (Agents / Findings / Verdicts / Changed / Charts / Results) below an
+      always-visible Overview strip; 7-checkbox `#toggles` panel bar removed. Active
+      tab persists via `state.activeTab`; per-tab scroll captured/restored via
+      `state.tabScroll`. Findings paginated at 50/page (Prev/Next; reset on filter
+      change). WAI-ARIA tabs pattern: roving `tabindex`, ArrowLeft/Right/Home/End,
+      active tab indicated by bottom border + font-weight (not color alone). Disabled
+      tabs muted at 0.35 opacity. Card fold state persists; Collapse-all / Expand-all
+      button with dynamic label.
 - [x] **Demote the standalone Results (structured-results) panel (M2-Layout sub-item):**
-      hidden by default (`results:0`); typed renderers in agent cards are the primary view.
-      Per-panel toggle retained.
+      Results tab shown last and disabled when `structuredResults` is empty; typed
+      renderers in agent cards are the primary view.
 - [x] **Chart contrast across themes (M2-Charts follow-up):** chart fills use
       `--vscode-charts-*` (with hex fallbacks); `@media (forced-colors:active)` covers
-      chart bar rects and trend paths.
+      chart bar rects and trend paths. Implemented via CSS classes — CSP-safe (no
+      inline `style=` attributes).
 
 **Acceptance:** counts match a hand-check of a sample run; charts render across
 1..N agents; the exported Markdown round-trips into a GitHub issue/PR cleanly and

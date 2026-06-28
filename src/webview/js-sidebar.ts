@@ -84,15 +84,20 @@ function render(){
   var totalShown=combined.length,totalAll=running.length+stalled.length;
   var more=totalAll>5?'<div class="dim sb-agent-overflow">+'+safeN(totalAll-5)+' more</div>':'';
   var agentSection='<div class="sb-section" data-testid="sidebar-agents"><div class="sb-section-title">Agents</div>'+rows+more+'</div>';
-  // Changed files section: show up to 5 recently changed files when present.
-  // The sidebar is the persistent monitoring view; surfacing file activity here
-  // means users don't need to open the full panel to see what's changing.
+  // Changed files section: use changedByAgents (agent-reported union) as the primary
+  // source — this is populated for any run where agents reported filesChanged[], making
+  // it reliable for completed runs when the mtime scan (snap.changed) returns nothing.
+  // Fall back to snap.changed (mtime-based) when changedByAgents is empty.
   var changedSection='';
-  if(snap.changed&&snap.changed.length>0){
-    var chFiles=snap.changed.slice(0,5);
+  var byAgentsSb=snap.changedByAgents&&snap.changedByAgents.length?snap.changedByAgents:null;
+  var mtimeSb=snap.changed&&snap.changed.length?snap.changed:null;
+  var chSourceSb=byAgentsSb||mtimeSb;
+  if(chSourceSb){
+    var chTitleSb=byAgentsSb?'Changed files':'Recently touched';
+    var chFiles=chSourceSb.slice(0,5);
     var chRows=chFiles.map(function(f){return '<div class="dim sb-changed-file">'+esc(f)+'</div>';}).join('');
-    var chMore=snap.changed.length>5?'<div class="dim sb-changed-more">+'+safeN(snap.changed.length-5)+' more</div>':'';
-    changedSection='<div class="sb-section"><div class="sb-section-title">Changed files</div>'+chRows+chMore+'</div>';
+    var chMore=chSourceSb.length>5?'<div class="dim sb-changed-more">+'+safeN(chSourceSb.length-5)+' more</div>':'';
+    changedSection='<div class="sb-section"><div class="sb-section-title">'+chTitleSb+'</div>'+chRows+chMore+'</div>';
   }
   var sy=window.scrollY;
   root.innerHTML=header+phaseSection+kpiSection+sevSection+agentSection+changedSection;

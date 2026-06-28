@@ -20,9 +20,9 @@ export interface Cfg {
   pinnedDir?: string;
 }
 
-// Maximum age in seconds for the "changed files" panel (< 2 minutes).
-// Must stay in sync with the panel title in html.ts.
-export const CHANGED_MAX_SECS = 120;
+// Maximum age in seconds for the "changed files" panel (< 15 minutes).
+// Must stay in sync with the changedMaxMin default in html.ts (CHANGED_MAX_SECS / 60 = 15).
+export const CHANGED_MAX_SECS = 900;
 
 // Maximum number of agent transcript files processed per refresh.
 // Exported so html.ts can display the exact cap value in the user-visible warning.
@@ -139,6 +139,9 @@ export type SnapshotOk = {
   /** True when a pinned run is in use (cfg.pinnedDir was set and exists). */
   isPinned: boolean;
   changed: string[] | null;
+  /** Union of filesChanged arrays from all agent structured results, deduplicated and sorted.
+   *  Empty array when no agents have reported filesChanged. Never null. */
+  changedByAgents: string[];
 };
 
 export type SnapshotErr = {
@@ -158,9 +161,13 @@ export function buildSnapshot(cfg: Cfg): Snapshot {
     // degrade to {ok:false} rather than propagating an exception to the UI.
     // This path requires a genuine unguarded throw inside _buildSnapshotUnsafe —
     // all individual guards are unit-tested; this outer catch is a last resort.
-    /* c8 ignore next 3 */
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, msg: `Internal error building snapshot: ${msg}` };
+    // Redact filesystem paths from the error message before surfacing it in the
+    // webview to avoid leaking internal path information to the user.
+    /* c8 ignore next 5 */
+    const raw = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line security/detect-unsafe-regex -- path-redaction: non-backtracking character class [A-Za-z0-9._-], no catastrophic alternation
+    const redacted = raw.replace(/\/(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]*/g, '<path>');
+    return { ok: false, msg: `Internal error building snapshot: ${redacted}` };
   }
 }
 
@@ -442,6 +449,29 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
   if (loopCacheCreate !== undefined) loopStats.cacheCreate = loopCacheCreate;
   if (loopCacheRead !== undefined) loopStats.cacheRead = loopCacheRead;
 
+  // Aggregate filesChanged from ALL raw journal result records.
+  // Iterates the full journal (not the capped agents[] slice) so agents beyond
+  // MAX_AGENTS=200 still contribute their filesChanged entries. The journal loop
+  // above handles findings/verdicts/structuredResults; this loop covers the
+  // orthogonal filesChanged union across every result record.
+  // Tolerates missing, null, or non-array filesChanged gracefully.
+  const changedByAgentsSet = new Set<string>();
+  for (const o of journal) {
+    if (o == null || typeof o !== 'object') continue;
+    const obj = o as Record<string, unknown>;
+    if (obj['type'] !== 'result') continue;
+    const res = obj['result'];
+    if (res && typeof res === 'object') {
+      const fc = (res as Record<string, unknown>)['filesChanged'];
+      if (Array.isArray(fc)) {
+        for (const f of fc) {
+          if (typeof f === 'string' && f) changedByAgentsSet.add(f);
+        }
+      }
+    }
+  }
+  const changedByAgents = [...changedByAgentsSet].sort();
+
   return {
     ok: true,
     runId: path.basename(wfDir),
@@ -457,5 +487,6 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
     verdictLabels,
     isPinned,
     changed: cfg.repo ? walkChanged(cfg.repo, CHANGED_MAX_SECS) : null,
+    changedByAgents,
   };
 }

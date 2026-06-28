@@ -13,6 +13,7 @@
  */
 
 import type { SnapshotOk, Finding, Verdict } from '../data/snapshot';
+import { CHANGED_MAX_SECS } from '../data/snapshot';
 
 // Severity display order — CRITICAL first so the most important findings rise
 // to the top of each reviewer's section. NITPICK sits after LOW (lowest named
@@ -156,10 +157,13 @@ function escBody(v: unknown): string {
     // injection (** in a value would close or forge the surrounding **Why:** bold span).
     // Edge case: a string consisting solely of asterisks (e.g. '**' or '****') becomes
     // a lone '*', a dangling italic marker with no matching closer.
-    // The replace below strips any lone '*' surrounded only by whitespace or string
+    // The first replace strips any lone '*' surrounded only by whitespace or string
     // boundaries so bare-asterisk inputs produce an empty-of-markers result.
+    // The second replace escapes any remaining lone asterisk that is not surrounded by
+    // word characters (e.g. '** text' → '* text' → escaped to avoid dangling italic opener).
     .replace(/\*{2,}/g, '*')
-    .replace(/(?<=\s|^)\*(?=\s|$)/gm, '');
+    .replace(/(?<=\s|^)\*(?=\s|$)/gm, '')
+    .replace(/(^|\s)\*(\s)/gm, '$1\\*$2');
   return defangLinks(processed).replace(/```/g, '\\`\\`\\`');
 }
 
@@ -430,15 +434,32 @@ function buildAgentMetrics(snap: SnapshotOk): string {
 }
 
 function buildChangedFiles(snap: SnapshotOk): string {
-  if (!snap.changed || snap.changed.length === 0) return '';
+  const byAgents = snap.changedByAgents ?? [];
+  const mtime = snap.changed ?? [];
+  if (byAgents.length === 0 && mtime.length === 0) return '';
 
   const lines: string[] = [];
   lines.push(`## Changed Files`);
   lines.push('');
-  for (const f of snap.changed) {
-    lines.push(`- \`${escInlineCode(f)}\``);
+
+  if (byAgents.length > 0) {
+    lines.push(`### Files reported by agents`);
+    lines.push('');
+    for (const f of byAgents) {
+      lines.push(`- \`${escInlineCode(f)}\``);
+    }
+    lines.push('');
   }
-  lines.push('');
+
+  if (mtime.length > 0) {
+    const changedMaxMin = Math.round(CHANGED_MAX_SECS / 60);
+    lines.push(`### Recently touched (last ${changedMaxMin} min)`);
+    lines.push('');
+    for (const f of mtime) {
+      lines.push(`- \`${escInlineCode(f)}\``);
+    }
+    lines.push('');
+  }
 
   return lines.join('\n');
 }

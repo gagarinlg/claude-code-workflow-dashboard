@@ -17,9 +17,9 @@ import { generateMarkdown, buildExportFilename } from './export/markdown';
 // so there is never a TDZ (Temporal Dead Zone) risk — getCfg() references
 // pinnedDir, so pinnedDir must be declared before getCfg is defined.
 // TODO(tech-debt): move into an activation-context object to support clean reload
-// across multiple activate() calls. Deferred from M1: the activate() reset
-// block (lines ~239-262) already handles the re-activation hazard correctly;
-// the structural refactor is a code-quality improvement, not a correctness fix.
+// across multiple activate() calls. Tracked in ROADMAP.md §M3 "M3-tech-debt: Activation-context
+// object in extension.ts". The activate() reset block already handles re-activation correctly;
+// this is a code-quality improvement scheduled for M3.
 let latest: Snapshot | null = null;
 const webviews = new Set<vscode.Webview>();
 let statusItem: vscode.StatusBarItem | null = null;
@@ -153,10 +153,14 @@ function attachWebview(webview: vscode.Webview, disposables: vscode.Disposable[]
       // Copy prompt (or any text) to the VS Code clipboard so it works inside
       // remote/web contexts where the webview cannot access navigator.clipboard.
       // Server-side cap guards against oversized payloads regardless of webview state.
-      vscode.env.clipboard.writeText(msg['text'].slice(0, MAX_PROMPT_CHARS)).then(
-        () => {},
-        () => {}, // ignore clipboard errors — non-critical UX
-      );
+      // Trim guard: skip silent no-op clipboard writes for blank/whitespace-only text.
+      const textToCopy = msg['text'].slice(0, MAX_PROMPT_CHARS);
+      if (textToCopy.trim().length > 0) {
+        vscode.env.clipboard.writeText(textToCopy).then(
+          () => {},
+          () => {}, // ignore clipboard errors — non-critical UX
+        );
+      }
     }
   });
   disposables.push(msgDisposable);
@@ -346,7 +350,8 @@ export function activate(context: vscode.ExtensionContext): void {
   // and reactivate an extension without unloading the module (e.g. F5 in the
   // Extension Development Host). Without a reset, stale Webview and StatusBarItem
   // references from the prior session leak, causing ghost status-bar items and
-  // postMessage() calls to disposed webviews. TODO(tech-debt): move into an activation-context object.
+  // postMessage() calls to disposed webviews.
+  // TODO(tech-debt): tracked in ROADMAP.md §M3 "M3-tech-debt: Activation-context object".
   latest = null;
   webviews.clear();
 

@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getHtml } from '../src/webview/html';
 import { CHANGED_MAX_SECS } from '../src/data/snapshot';
+import { getPanelJs } from './helpers/webview';
 
 const TEST_NONCE = 'dGVzdG5vbmNlMTIz';
 
@@ -59,8 +60,8 @@ describe('getHtml', () => {
     expect(getHtml(TEST_NONCE)).toContain('id="guideBtn"');
   });
 
-  it('contains the toggles element', () => {
-    expect(getHtml(TEST_NONCE)).toContain('id="toggles"');
+  it('does NOT contain the toggles element (removed in tabbed layout redesign)', () => {
+    expect(getHtml(TEST_NONCE)).not.toContain('id="toggles"');
   });
 
   it('contains the esc() helper with quote escaping (sev-key XSS fix)', () => {
@@ -228,11 +229,11 @@ describe('getHtml', () => {
   // -------------------------------------------------------------------------
   // Static bar elements: refreshBtn, guideBtn, toggles, meta must be present
   // -------------------------------------------------------------------------
-  it('static bar contains refreshBtn, guideBtn, toggles, meta element ids', () => {
+  it('static bar contains refreshBtn, guideBtn, meta element ids (no toggles in tabbed layout)', () => {
     const html = getHtml(TEST_NONCE);
     expect(html).toContain('id="refreshBtn"');
     expect(html).toContain('id="guideBtn"');
-    expect(html).toContain('id="toggles"');
+    expect(html).not.toContain('id="toggles"');
     expect(html).toContain('id="meta"');
   });
 
@@ -259,9 +260,9 @@ describe('getHtml', () => {
     expect(html).toContain(`const CHANGED_MAX_MIN=${CHANGED_MAX_SECS / 60}`);
   });
 
-  it('getHtml uses default changedMaxMin=2 when no arg passed (matches CHANGED_MAX_SECS=120)', () => {
+  it('getHtml uses default changedMaxMin=15 when no arg passed (matches CHANGED_MAX_SECS=900)', () => {
     const html = getHtml(TEST_NONCE);
-    expect(html).toContain('const CHANGED_MAX_MIN=2');
+    expect(html).toContain('const CHANGED_MAX_MIN=15');
   });
 
   it('getHtml changedMaxMin param changes the injected constant', () => {
@@ -503,9 +504,13 @@ describe('M1-SidebarUX — sidebar mode', () => {
   // Panel mode unchanged: calling getHtml without the mode arg (or with
   // mode:'panel') still produces the original six-panel layout.
   // -------------------------------------------------------------------------
-  it('panel mode (default) still contains the six-panel toggles bar', () => {
-    expect(getHtml(TEST_NONCE)).toContain('id="toggles"');
-    expect(getHtml(TEST_NONCE, 2, 200, 'panel')).toContain('id="toggles"');
+  it('panel mode (default) does NOT contain the toggles bar (replaced by tab bar in redesign)', () => {
+    // M3-Layout redesign: panel checkboxes removed, replaced by WAI-ARIA tablist.
+    expect(getHtml(TEST_NONCE)).not.toContain('id="toggles"');
+    expect(getHtml(TEST_NONCE, 2, 200, 'panel')).not.toContain('id="toggles"');
+    // Tab bar must be present instead
+    expect(getHtml(TEST_NONCE)).toContain('role="tablist"');
+    expect(getHtml(TEST_NONCE)).toContain('id="tab-bar"');
   });
 
   it('panel mode does NOT contain sidebar data-mode attribute', () => {
@@ -674,22 +679,23 @@ describe('M1-SidebarUX — sidebar mode', () => {
     // A rename to anything else would go undetected without this assertion.
     expect(html).toContain('data-testid="empty-state-sidebar"');
   });
+
+  // -------------------------------------------------------------------------
+  // Spec v3 correction #7: sidebar changed-files section uses changedByAgents
+  // as the primary source so completed runs still show file activity.
+  // -------------------------------------------------------------------------
+  it('sidebar JS uses changedByAgents as primary source for changed-files section', () => {
+    const html = getHtml(TEST_NONCE, 2, 200, 'sidebar');
+    // The sidebar JS template must reference snap.changedByAgents in the changed section.
+    // If a future commit reverts to snap.changed-only, this test catches the regression.
+    expect(html).toContain('changedByAgents');
+  });
 });
 
 // ---------------------------------------------------------------------------
 // M1-ClearFilters: 'Clear filters' button placement and wiring
 // ---------------------------------------------------------------------------
 describe('M1-ClearFilters — Clear filters button in filter bar', () => {
-  // Helper: extract the JS source constant from the panel-mode HTML.
-  function getPanelJs(html: string): string {
-    const TEST_NONCE_LOCAL = 'dGVzdG5vbmNlMTIz';
-    const scriptOpen = `<script nonce="${TEST_NONCE_LOCAL}">`;
-    const scriptClose = '</script>';
-    const scriptStart = html.indexOf(scriptOpen);
-    const scriptEnd = html.lastIndexOf(scriptClose);
-    return html.slice(scriptStart + scriptOpen.length, scriptEnd);
-  }
-
   // -------------------------------------------------------------------------
   // The button must now live inside the filter bar (the .filters div), not
   // exclusively in the empty-result fallback branch.
@@ -1009,14 +1015,6 @@ describe('Round-3 fixes', () => {
 // M2-AgentPrompt: Prompt disclosure rendering and escaping in getHtml()
 // ---------------------------------------------------------------------------
 describe('M2-AgentPrompt — Prompt disclosure in agent cards', () => {
-  function getPanelJs(html: string): string {
-    const scriptOpen = `<script nonce="${TEST_NONCE}">`;
-    const scriptClose = '</script>';
-    const s = html.indexOf(scriptOpen);
-    const e = html.lastIndexOf(scriptClose);
-    return html.slice(s + scriptOpen.length, e);
-  }
-
   // -------------------------------------------------------------------------
   // CSS: the .prompt-disc class must be defined so the disclosure is styled.
   // -------------------------------------------------------------------------
@@ -1155,14 +1153,6 @@ describe('M2-AgentPrompt — Prompt disclosure in agent cards', () => {
 // Sabine HIGH/MED accessibility fixes (WCAG 1.4.1, 4.1.2, plus UX fixes)
 // ---------------------------------------------------------------------------
 describe('Accessibility fixes — Sabine HIGH/MED findings', () => {
-  function getPanelJs(html: string): string {
-    const scriptOpen = `<script nonce="${TEST_NONCE}">`;
-    const scriptClose = '</script>';
-    const s = html.indexOf(scriptOpen);
-    const e = html.lastIndexOf(scriptClose);
-    return html.slice(s + scriptOpen.length, e);
-  }
-
   // -------------------------------------------------------------------------
   // AC1: WCAG 1.4.1 — filter chips must NOT convey active/inactive by opacity alone.
   // Fix: active chips get border:2px solid (heavier border); inactive get border-style:dashed.
@@ -1205,15 +1195,15 @@ describe('Accessibility fixes — Sabine HIGH/MED findings', () => {
   });
 
   // -------------------------------------------------------------------------
-  // AC2: WCAG 4.1.2 — Prompt disclosure header must have role="button" and aria-expanded.
-  // The header is a <div> acting as a button; without role="button" screen readers
-  // cannot announce its interactive nature or announce its expanded/collapsed state.
+  // AC2: WCAG 4.1.2 — Prompt disclosure header is a real <button class="prompt-disc-hdr">.
+  // No role="button" is needed on the element itself — native <button> semantics are used.
+  // Screen readers announce its interactive nature and expanded/collapsed state via
+  // aria-expanded, which wire() keeps in sync with the open/closed class.
   // -------------------------------------------------------------------------
-  it('AC2: prompt disclosure header has role="button" (WCAG 4.1.2)', () => {
+  it('AC2: prompt disclosure header is a real <button> element (WCAG 4.1.2)', () => {
     const js = getPanelJs(getHtml(TEST_NONCE));
-    // The header element must carry role="button"
-    expect(js).toContain('prompt-disc-hdr');
-    expect(js).toContain('role="button"');
+    // The header must be rendered as a native <button> element, not a div+role=button
+    expect(js).toContain('<button class="prompt-disc-hdr"');
   });
 
   it('AC2: prompt disclosure header has aria-expanded set to initial state', () => {
@@ -1283,28 +1273,27 @@ describe('Accessibility fixes — Sabine HIGH/MED findings', () => {
   // The toggle bar labels are spatially ordered: their checkbox position in the
   // toolbar must correspond to the panel's vertical position on the page.
   // -------------------------------------------------------------------------
-  it('AC4: PANELS array order matches render() build order', () => {
+  it('AC4: tabDefs() tab order is Agents | Findings | Verdicts | Changed | Charts | Results', () => {
+    // M3-Layout: PANELS array replaced by tabDefs() returning ordered tab definitions.
+    // The tab order in tabDefs() must be: agents, findings, verdicts, changed, charts, results.
     const js = getPanelJs(getHtml(TEST_NONCE));
-    // Extract the PANELS constant line
-    const panelsLine = js.split('\n').find((l) => l.startsWith('const PANELS='));
-    expect(panelsLine).toBeDefined();
-    // Extract ordered keys from the PANELS array
-    const keys: string[] = [];
-    const re = /\['([^']+)','[^']+'\]/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(panelsLine!)) !== null) {
-      keys.push(m[1]!);
-    }
-    // Extract render order from the render() function body
-    // The render function uses: if(state.on.X!==0)h+=XPanel()
-    const renderOrder: string[] = [];
-    const renderRe = /state\.on\.(\w+)!==0/g;
-    let rm: RegExpExecArray | null;
-    while ((rm = renderRe.exec(js)) !== null) {
-      renderOrder.push(rm[1]!);
-    }
-    // PANELS keys and render order must be identical sequences
-    expect(keys).toEqual(renderOrder);
+    // tabDefs returns an array; verify the key order by finding the return-array content.
+    const tabDefsIdx = js.indexOf('function tabDefs()');
+    expect(tabDefsIdx).toBeGreaterThan(-1);
+    const tabDefsSlice = js.slice(tabDefsIdx, tabDefsIdx + 1000);
+    // Keys must appear in the documented order.
+    const agentsPos = tabDefsSlice.indexOf("key:'agents'");
+    const findingsPos = tabDefsSlice.indexOf("key:'findings'");
+    const verdictsPos = tabDefsSlice.indexOf("key:'verdicts'");
+    const changedPos = tabDefsSlice.indexOf("key:'changed'");
+    const chartsPos = tabDefsSlice.indexOf("key:'charts'");
+    const resultsPos = tabDefsSlice.indexOf("key:'results'");
+    expect(agentsPos).toBeGreaterThan(-1);
+    expect(findingsPos).toBeGreaterThan(agentsPos);
+    expect(verdictsPos).toBeGreaterThan(findingsPos);
+    expect(changedPos).toBeGreaterThan(verdictsPos);
+    expect(chartsPos).toBeGreaterThan(changedPos);
+    expect(resultsPos).toBeGreaterThan(chartsPos);
   });
 
   // -------------------------------------------------------------------------
@@ -1359,14 +1348,6 @@ describe('Accessibility fixes — Sabine HIGH/MED findings', () => {
 // M2-Layout: collapsible panel headers (click h3 to fold/unfold, persist via setState)
 // ---------------------------------------------------------------------------
 describe('M2-Layout — collapsible panel section headers', () => {
-  function getPanelJs(html: string): string {
-    const scriptOpen = `<script nonce="${TEST_NONCE}">`;
-    const scriptClose = '</script>';
-    const s = html.indexOf(scriptOpen);
-    const e = html.lastIndexOf(scriptClose);
-    return html.slice(s + scriptOpen.length, e);
-  }
-
   // -------------------------------------------------------------------------
   // CSS: panel h3 must NOT have cursor:pointer — only the child button gets it.
   // The h3 is a non-interactive heading landmark; cursor:pointer on it would be
@@ -1463,42 +1444,47 @@ describe('M2-Layout — collapsible panel section headers', () => {
   });
 
   // -------------------------------------------------------------------------
-  // JS state: panelOpen key is in state initializer, defaulting charts to 0.
+  // JS state: M3-Layout — panelOpen keys for verdicts/changed/charts/results dropped.
+  // v3 BINDING: tab panels render directly; panelOpen is no longer in the state
+  // initializer for verdicts/changed/charts/results (AC10/AC11 in erika-m3-layout-verification).
   // -------------------------------------------------------------------------
-  it('JS state initializer includes panelOpen key', () => {
+  it('JS state initializer does NOT include panelOpen key for verdicts/changed/charts/results (M3 v3 binding)', () => {
     const js = getPanelJs(getHtml(TEST_NONCE));
-    expect(js).toContain('panelOpen:');
+    // M3 v3: panelOpen keys for tab panels are dropped entirely.
+    // Extract the state literal to verify the keys are absent.
+    const stateDecl = js.slice(js.indexOf('let state={'), js.indexOf('};', js.indexOf('let state={')));
+    expect(stateDecl).not.toContain('verdicts:');
+    expect(stateDecl).not.toContain('changed:');
+    expect(stateDecl).not.toContain('charts:');
+    expect(stateDecl).not.toContain('results:');
   });
 
-  it('JS state panelOpen defaults charts to 0 (collapsed) to cut default scroll distance', () => {
+  it('JS state initializer does NOT include charts:0 (M3: Charts tab renders directly, no collapse state)', () => {
     const js = getPanelJs(getHtml(TEST_NONCE));
-    // panelOpen default must have charts:0 so Charts starts collapsed even when toggled on.
-    // This is the M2-Layout requirement: "Charts panel collapsed by default".
-    // The state line uses Object.assign({key:val,...}, _s.panelOpen||{}).
-    // Search for the Object.assign literal to skip any comment lines containing 'panelOpen:'.
-    const panelOpenIdx = js.indexOf('panelOpen:Object.assign(');
-    expect(panelOpenIdx).toBeGreaterThan(-1);
-    const panelOpenSlice = js.slice(panelOpenIdx, panelOpenIdx + 200);
-    expect(panelOpenSlice).toContain('charts:0');
+    // M3 v3: Charts is now a direct-render tab, not a collapsible panel. charts:0 is gone.
+    const stateDecl = js.slice(js.indexOf('let state={'), js.indexOf('};', js.indexOf('let state={')));
+    expect(stateDecl).not.toContain('charts:');
   });
 
-  it('JS state panelOpen defaults all non-charts panels to 1 (expanded)', () => {
+  it('JS state initializer does NOT include in-tab panel collapse keys (M3 v3 binding removes all four)', () => {
+    // M3-Layout v3 BINDING: verdicts/changed/charts/results render directly inside their tabs.
+    // None of these need panelOpen keys — the tab itself is the container.
     const js = getPanelJs(getHtml(TEST_NONCE));
-    // All panels other than charts should default to 1 (visible/expanded).
-    const panelOpenIdx = js.indexOf('panelOpen:Object.assign(');
-    expect(panelOpenIdx).toBeGreaterThan(-1);
-    const panelOpenSlice = js.slice(panelOpenIdx, panelOpenIdx + 200);
-    expect(panelOpenSlice).toContain('overview:1');
-    expect(panelOpenSlice).toContain('agents:1');
-    expect(panelOpenSlice).toContain('findings:1');
-    expect(panelOpenSlice).toContain('verdicts:1');
-    expect(panelOpenSlice).toContain('changed:1');
+    const stateDecl = js.slice(js.indexOf('let state={'), js.indexOf('};', js.indexOf('let state={')));
+    expect(stateDecl).not.toContain('verdicts:');
+    expect(stateDecl).not.toContain('changed:');
+    expect(stateDecl).not.toContain('results:');
+    expect(stateDecl).not.toContain('charts:');
+    // overview/agents/findings were already not in panelOpen — still not.
+    expect(stateDecl).not.toContain('overview:');
+    expect(stateDecl).not.toContain('agents:1');
+    expect(stateDecl).not.toContain('findings:1');
   });
 
-  it('JS state panelOpen is persisted from _s (restored from api.getState)', () => {
+  it('JS state restores panelOpen from _s.panelOpen for future callers', () => {
     const js = getPanelJs(getHtml(TEST_NONCE));
-    // The state initializer must merge _s.panelOpen so persisted collapse state
-    // survives a snapshot re-render.
+    // panelOpen is merged from persisted state so any future panel() callers
+    // benefit from collapse-state persistence across re-renders.
     expect(js).toContain('_s.panelOpen');
   });
 
@@ -1577,5 +1563,560 @@ describe('M2-Layout — collapsible panel section headers', () => {
     const section = js.slice(idx, idx + 600);
     // render() must not appear inside the panel toggle handler
     expect(section).not.toMatch(/toggle_panel[^}]*render\(\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M3-Layout: tabbed dashboard — WAI-ARIA tablist/tab/tabpanel structure
+// ---------------------------------------------------------------------------
+describe('M3-Layout — WAI-ARIA tablist/tab/tabpanel structure', () => {
+  // -------------------------------------------------------------------------
+  // HTML: tablist, tab, tabpanel roles must be present (spec §AC(c))
+  // -------------------------------------------------------------------------
+  it('panel HTML contains role="tablist" (WAI-ARIA tab pattern)', () => {
+    expect(getHtml(TEST_NONCE)).toContain('role="tablist"');
+  });
+
+  it('panel HTML contains role="tab" (WAI-ARIA tab pattern)', () => {
+    expect(getHtml(TEST_NONCE)).toContain('role="tab"');
+  });
+
+  it('panel HTML contains role="tabpanel" (WAI-ARIA tab pattern)', () => {
+    // tabpanel is rendered by tabContent() inside render() — present in JS source.
+    expect(getHtml(TEST_NONCE)).toContain('role="tabpanel"');
+  });
+
+  it('panel HTML does NOT contain id="toggles" (removed in redesign)', () => {
+    expect(getHtml(TEST_NONCE)).not.toContain('id="toggles"');
+  });
+
+  it('panel HTML does NOT contain panels-label class (removed in redesign)', () => {
+    expect(getHtml(TEST_NONCE)).not.toContain('panels-label');
+  });
+
+  it('tabBar() JS builds buttons with role="tab" and data-tabkey', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('role="tab"');
+    expect(js).toContain('data-tabkey=');
+  });
+
+  it('tabBar() JS aria-label on the tablist is "Dashboard sections"', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('aria-label="Dashboard sections"');
+  });
+
+  it('tabBar() JS sets aria-selected="true" on active tab, aria-selected="false" on inactive', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('aria-selected="true"');
+    expect(js).toContain('aria-selected="false"');
+  });
+
+  it('active tab gets tabindex="0", inactive enabled tabs get tabindex="-1"', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('tabindex="0"');
+    expect(js).toContain('tabindex="-1"');
+  });
+
+  it('disabled tabs carry disabled attr and aria-disabled="true"', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('aria-disabled="true"');
+    expect(js).toContain(' disabled ');
+  });
+
+  it('#overview-bar is always rendered (non-collapsible, no data-pkey="overview")', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // overview() returns a #overview-bar div — not a panel() wrapper.
+    expect(js).toContain('id="overview-bar"');
+    // No data-pkey="overview" — overview is not collapsible.
+    expect(js).not.toContain('data-pkey="overview"');
+  });
+
+  it('overview() does not return a panel() wrapper (no collapse chevron)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The old overview wrapped in panel('overview','Overview',body).
+    // After redesign, it returns a plain #overview-bar div.
+    expect(js).not.toContain("panel('overview'");
+  });
+
+  it('tabContent() renders role="tabpanel" with aria-labelledby the active tab id', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('role="tabpanel"');
+    expect(js).toContain('aria-labelledby="tab-');
+  });
+
+  // -------------------------------------------------------------------------
+  // Keyboard model: wireTabBar() must wire ArrowLeft/Right + Home/End + Enter/Space
+  // -------------------------------------------------------------------------
+  it('wireTabBar() handles ArrowRight key to advance focus', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain("'ArrowRight'");
+  });
+
+  it('wireTabBar() handles ArrowLeft key to go back', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain("'ArrowLeft'");
+  });
+
+  it('wireTabBar() handles Home key to jump to first tab', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain("'Home'");
+  });
+
+  it('wireTabBar() handles End key to jump to last tab', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain("'End'");
+  });
+
+  it('wireTabBar() activates tab on Enter key', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    const wireIdx = js.indexOf('function wireTabBar()');
+    expect(wireIdx).toBeGreaterThan(-1);
+    // wireTabBar() function body is ~1800 chars — use 2200 to include the Enter/Space handler.
+    const section = js.slice(wireIdx, wireIdx + 2200);
+    expect(section).toContain("'Enter'");
+    expect(section).toContain("' '");
+  });
+
+  // -------------------------------------------------------------------------
+  // State migration: state.activeTab present, state.on absent (spec §AC(g))
+  // -------------------------------------------------------------------------
+  it('JS state has activeTab (not state.on)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('activeTab:');
+    expect(js).not.toContain('on:{');
+  });
+
+  it('JS state has tabScroll object', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('tabScroll:');
+  });
+
+  it('JS state has findPage (for pagination)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('findPage:');
+  });
+
+  // -------------------------------------------------------------------------
+  // CSS: #root flex-column, #tab-content flex:1 overflow-y:auto
+  // -------------------------------------------------------------------------
+  it('CSS #root is flex-column that fills remaining body height', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('#root{display:flex;flex-direction:column');
+    // #root uses flex:1 on the body flex column (body has height:100vh) — no calc needed.
+    expect(html).toContain('#root{display:flex;flex-direction:column;flex:1;overflow:hidden}');
+  });
+
+  it('CSS #tab-content has flex:1 overflow-y:auto', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('#tab-content{flex:1;overflow-y:auto');
+  });
+
+  it('CSS #overview-bar is defined (always-visible KPI strip)', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('#overview-bar{');
+  });
+
+  it('CSS #tab-bar has role="tablist" target rule', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('#tab-bar{');
+  });
+
+  it('CSS .tab-btn is defined with non-button styling', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.tab-btn{');
+  });
+
+  it('CSS .tab-btn.tab-active has 2px border-bottom (non-color indicator)', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.tab-btn.tab-active{');
+    const idx = html.indexOf('.tab-btn.tab-active{');
+    const rule = html.slice(idx, html.indexOf('}', idx));
+    expect(rule).toContain('border-bottom:2px');
+    expect(rule).toContain('font-weight:700');
+  });
+
+  it('CSS .tab-btn.tab-active uses --vscode-focusBorder for active indicator (not hardcoded color)', () => {
+    const html = getHtml(TEST_NONCE);
+    const idx = html.indexOf('.tab-btn.tab-active{');
+    const rule = html.slice(idx, html.indexOf('}', idx));
+    expect(rule).toContain('--vscode-focusBorder');
+  });
+
+  it('CSS disabled tab is muted via opacity:.35', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.tab-btn[disabled]{');
+    const idx = html.indexOf('.tab-btn[disabled]{');
+    const rule = html.slice(idx, html.indexOf('}', idx));
+    expect(rule).toContain('opacity:.35');
+  });
+
+  it('CSS forced-colors block overrides tab-active indicator with Highlight system color', () => {
+    const html = getHtml(TEST_NONCE);
+    // Use '@media (forced-colors:active){' (with {) to skip any comment containing the string.
+    const fcIdx = html.indexOf('@media (forced-colors:active){');
+    expect(fcIdx).toBeGreaterThan(-1);
+    // Find end of forced-colors block by scanning for matching closing brace.
+    let depth = 0; let i = fcIdx; let bodyStarted = false;
+    while (i < html.length) {
+      if (html[i] === '{') { depth++; bodyStarted = true; }
+      if (html[i] === '}') { depth--; }
+      if (bodyStarted && depth === 0) break;
+      i++;
+    }
+    const fcBlock = html.slice(fcIdx, i + 1);
+    expect(fcBlock).toContain('Highlight');
+    expect(fcBlock).toContain('tab-active');
+  });
+
+  // -------------------------------------------------------------------------
+  // Findings pagination (spec §AC pagination)
+  // -------------------------------------------------------------------------
+  it('JS defines PAGE_SIZE=50 constant', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('PAGE_SIZE=50');
+  });
+
+  it('JS findingsPanel emits Prev/Next paginator buttons (id="findPrevBtn"/id="findNextBtn")', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('id="findPrevBtn"');
+    expect(js).toContain('id="findNextBtn"');
+  });
+
+  it('JS wire() wires findPrevBtn and findNextBtn via addEventListener', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain("getElementById('findPrevBtn')");
+    expect(js).toContain("getElementById('findNextBtn')");
+  });
+
+  it('JS chip filter toggle resets findPage to 0 (pagination reset on filter change)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The rev chip act() function must reset findPage
+    expect(js).toContain('state.findPage=0');
+  });
+
+  // -------------------------------------------------------------------------
+  // Render at 1 and 50 agents (spec §AC — must render cleanly)
+  // -------------------------------------------------------------------------
+  it('render works at 1 agent (single-agent run produces valid HTML)', () => {
+    const html = getHtml(TEST_NONCE, 2, 1);
+    expect(html).toContain('role="tablist"');
+    expect(html).toContain('role="tab"');
+    expect(html).toContain('role="tabpanel"');
+    // Script is syntactically valid
+    const scriptOpen = `<script nonce="${TEST_NONCE}">`;
+    const scriptClose = '</script>';
+    const s = html.indexOf(scriptOpen);
+    const e = html.lastIndexOf(scriptClose);
+    const scriptContent = html.slice(s + scriptOpen.length, e);
+    expect(() => {
+      new Function('acquireVsCodeApi', 'document', 'window', 'CSS', scriptContent);
+    }).not.toThrow();
+  });
+
+  it('render works at 50 agents (MAX_AGENTS=50 run produces valid HTML)', () => {
+    const html = getHtml(TEST_NONCE, 2, 50);
+    expect(html).toContain('role="tablist"');
+    expect(html).toContain('role="tabpanel"');
+    const scriptOpen = `<script nonce="${TEST_NONCE}">`;
+    const scriptClose = '</script>';
+    const s = html.indexOf(scriptOpen);
+    const e = html.lastIndexOf(scriptClose);
+    const scriptContent = html.slice(s + scriptOpen.length, e);
+    expect(() => {
+      new Function('acquireVsCodeApi', 'document', 'window', 'CSS', scriptContent);
+    }).not.toThrow();
+  });
+
+  it('.tab-badge is defined in CSS (count pill on Agents/Findings tabs)', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.tab-badge{');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Findings pagination — behavioral tests (execute findingsPanel() with real JS)
+//
+// Strategy: extract the panel JS from the template, inject controlled globals
+// (snap, state, PAGE_SIZE, etc.) and call findingsPanel() to get the output
+// HTML string, then count .finding divs and inspect paginator presence/state.
+//
+// The harness stubs every global the JS uses so new Function() can execute:
+//   acquireVsCodeApi – returns a fake api with getState/setState/postMessage
+//   document         – not used by findingsPanel() itself; stub as {}
+//   window           – not used; stub as {}
+//   CSS              – not used; stub as {}
+//   render()         – called at script end; stub to no-op
+//   STALE_SECS/STALE_LABEL/STALE_TOOLTIP/CHANGED_MAX_MIN/MAX_AGENTS – injected
+// ---------------------------------------------------------------------------
+describe('Findings pagination — behavioral', () => {
+  // Build a factory that, given snap + state overrides, executes findingsPanel()
+  // and returns the output HTML string.
+  function runFindingsPanel(
+    snapOverrides: Record<string, unknown>,
+    stateOverrides: Record<string, unknown> = {},
+  ): string {
+    const html = getHtml(TEST_NONCE, 2, 200);
+    const scriptOpen = `<script nonce="${TEST_NONCE}">`;
+    const scriptClose = '</script>';
+    const s = html.indexOf(scriptOpen);
+    const e = html.lastIndexOf(scriptClose);
+    const rawJs = html.slice(s + scriptOpen.length, e);
+
+    // Build a fake snap with defaults sufficient for findingsPanel().
+    const defaultSnap = {
+      ok: true,
+      allFindings: [] as Array<Record<string, unknown>>,
+      labels: [] as string[],
+      loop: { passes: 1, findings: 0 },
+    };
+    const testSnap = { ...defaultSnap, ...snapOverrides };
+
+    // Build a default state consistent with how the webview initialises it.
+    const defaultState = {
+      activeTab: 'findings',
+      tabScroll: Object.create(null) as Record<string, unknown>,
+      findPage: 0,
+      panelOpen: { verdicts: 1, changed: 1, charts: 0, results: 1 },
+      openAgents: Object.create(null) as Record<string, unknown>,
+      openFind: Object.create(null) as Record<string, unknown>,
+      fRev: Object.create(null) as Record<string, unknown>,
+      fSev: Object.create(null) as Record<string, unknown>,
+      openPrompt: Object.create(null) as Record<string, unknown>,
+    };
+    const testState = { ...defaultState, ...stateOverrides };
+
+    // Strategy: extract only the pure utility functions and findingsPanel() from the
+    // webview JS. findingsPanel() only depends on: snap, state, PAGE_SIZE, esc, escCls,
+    // safeN — no DOM, no api, no document. We build a minimal harness with just these.
+    function extractFunction(js: string, name: string): string {
+      const marker = `function ${name}(`;
+      const start = js.indexOf(marker);
+      if (start === -1) throw new Error(`Function ${name} not found in webview JS`);
+      let depth = 0;
+      let inBody = false;
+      let i = start;
+      while (i < js.length) {
+        if (js[i] === '{') { depth++; inBody = true; }
+        if (js[i] === '}') {
+          depth--;
+          if (inBody && depth === 0) { return js.slice(start, i + 1); }
+        }
+        i++;
+      }
+      throw new Error(`Could not find closing brace for function ${name}`);
+    }
+
+    const harness = `
+      const PAGE_SIZE = 50;
+      let snap = testSnap;
+      let state = testState;
+      ${extractFunction(rawJs, 'esc')}
+      ${extractFunction(rawJs, 'escCls')}
+      ${extractFunction(rawJs, 'safeN')}
+      ${extractFunction(rawJs, 'fmtTok')}
+      ${extractFunction(rawJs, 'findingsPanel')}
+      return findingsPanel();
+    `;
+
+    const fn = new Function('testSnap', 'testState', harness);
+    return fn(testSnap, testState) as string;
+  }
+
+  // Helper: build N synthetic findings all from the same reviewer/severity/pass.
+  function makeFindings(n: number, overrides: Record<string, unknown> = {}): Array<Record<string, unknown>> {
+    return Array.from({ length: n }, (_, i) => ({
+      reviewer: 'gerda',
+      severity: 'HIGH',
+      pass: '1',
+      title: `Finding ${i + 1}`,
+      location: `src/file.ts:${i + 1}`,
+      why: 'why',
+      fix: 'fix',
+      ...overrides,
+    }));
+  }
+
+  // Count occurrences of class="finding in the output (both open and closed variants).
+  function countFindingDivs(html: string): number {
+    return (html.match(/class="finding /g) ?? []).length;
+  }
+
+  // -------------------------------------------------------------------------
+  // AC1: 131 findings, page 0 → 50 rows
+  // -------------------------------------------------------------------------
+  it('131 findings on page 0 renders exactly 50 finding rows', () => {
+    const findings = makeFindings(131);
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 0 },
+    );
+    expect(countFindingDivs(output)).toBe(50);
+  });
+
+  // -------------------------------------------------------------------------
+  // AC2: 131 findings, page 2 → 31 rows (items 101–131)
+  // -------------------------------------------------------------------------
+  it('131 findings on page 2 renders exactly 31 finding rows', () => {
+    const findings = makeFindings(131);
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 2 },
+    );
+    expect(countFindingDivs(output)).toBe(31);
+  });
+
+  // -------------------------------------------------------------------------
+  // AC3: paginator absent when filtered count <= 50
+  // -------------------------------------------------------------------------
+  it('paginator is absent when total filtered findings <= 50', () => {
+    const findings = makeFindings(50);
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 0 },
+    );
+    expect(output).not.toContain('find-paginator');
+    expect(output).not.toContain('findPrevBtn');
+    expect(output).not.toContain('findNextBtn');
+  });
+
+  it('paginator is absent when exactly 49 findings are shown', () => {
+    const findings = makeFindings(49);
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 0 },
+    );
+    expect(output).not.toContain('find-paginator');
+  });
+
+  // -------------------------------------------------------------------------
+  // AC4: Prev disabled at page 0
+  // -------------------------------------------------------------------------
+  it('Prev button is disabled on page 0', () => {
+    const findings = makeFindings(131);
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 0 },
+    );
+    // The disabled attribute appears on findPrevBtn at page 0.
+    const prevMatch = output.match(/id="findPrevBtn"([^>]*>)/);
+    expect(prevMatch).not.toBeNull();
+    expect(prevMatch![0]).toContain('disabled');
+  });
+
+  it('Prev button is NOT disabled on page 1', () => {
+    const findings = makeFindings(131);
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 1 },
+    );
+    const prevMatch = output.match(/id="findPrevBtn"([^>]*>)/);
+    expect(prevMatch).not.toBeNull();
+    expect(prevMatch![0]).not.toContain('disabled');
+  });
+
+  // -------------------------------------------------------------------------
+  // AC5: Next disabled at last page
+  // -------------------------------------------------------------------------
+  it('Next button is disabled on the last page (page 2 of 3 for 131 findings)', () => {
+    const findings = makeFindings(131);
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 2 },
+    );
+    const nextMatch = output.match(/id="findNextBtn"([^>]*>)/);
+    expect(nextMatch).not.toBeNull();
+    expect(nextMatch![0]).toContain('disabled');
+  });
+
+  it('Next button is NOT disabled on page 0 of 3', () => {
+    const findings = makeFindings(131);
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 0 },
+    );
+    const nextMatch = output.match(/id="findNextBtn"([^>]*>)/);
+    expect(nextMatch).not.toBeNull();
+    expect(nextMatch![0]).not.toContain('disabled');
+  });
+
+  // -------------------------------------------------------------------------
+  // AC6: Paginator info text format 'Page N of M · showing X–Y of Z'
+  // -------------------------------------------------------------------------
+  it('paginator shows correct info text format on page 0: "Page 1 of 3"', () => {
+    const findings = makeFindings(131);
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 0 },
+    );
+    expect(output).toContain('Page 1 of 3');
+    expect(output).toContain('showing 1');
+    expect(output).toContain('50');
+    expect(output).toContain('131');
+  });
+
+  it('paginator shows correct info text on page 2: "Page 3 of 3 · showing 101–131 of 131"', () => {
+    const findings = makeFindings(131);
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 2 },
+    );
+    expect(output).toContain('Page 3 of 3');
+    // pageStart+1 = 101, pageEnd = 131
+    expect(output).toContain('101');
+    expect(output).toContain('131');
+  });
+
+  // -------------------------------------------------------------------------
+  // AC7: Paginator rendered BOTH above and below the rows
+  // -------------------------------------------------------------------------
+  it('paginator appears both above and below the findings rows', () => {
+    const findings = makeFindings(131);
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 0 },
+    );
+    // Count occurrences of the paginator container
+    const paginatorCount = (output.match(/find-paginator/g) ?? []).length;
+    // Each paginator div contains two occurrences of "find-paginator" (class attr + closing tag context):
+    // simpler: count the findPrevBtn occurrences (one per paginator instance).
+    const prevCount = (output.match(/id="findPrevBtn"/g) ?? []).length;
+    const nextCount = (output.match(/id="findNextBtn"/g) ?? []).length;
+    expect(prevCount).toBe(2);
+    expect(nextCount).toBe(2);
+    expect(paginatorCount).toBeGreaterThanOrEqual(2);
+  });
+
+  // -------------------------------------------------------------------------
+  // AC8: pass-group headings preserved within each page
+  // -------------------------------------------------------------------------
+  it('pass-group headings are preserved within each page', () => {
+    // 131 findings split across two passes (pass 1: 80, pass 2: 51)
+    const pass1 = makeFindings(80, { pass: '1' });
+    const pass2 = makeFindings(51, { pass: '2' });
+    const findings = [...pass1, ...pass2];
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 0 },
+    );
+    // Page 0 has 50 items; both passes are represented (pass 1 has 80, first 50 are from pass 1)
+    // Findings are grouped by pass so page 0 should have a pass heading.
+    expect(output).toContain('pass-heading');
+  });
+
+  // -------------------------------------------------------------------------
+  // AC9: Filter toggle resets findPage to 0 (static JS source check)
+  // The behavioral test for this lives in js-wire.ts wiring tests above;
+  // here we verify the rendered findingsPanel output for page 0 state is correct
+  // when the caller provides findPage=0 (the post-filter-reset state).
+  // -------------------------------------------------------------------------
+  it('with findPage clamped from 5 to last valid page for 131 findings', () => {
+    // If stale state has findPage=5 but only 3 pages exist, it must be clamped.
+    const findings = makeFindings(131);
+    const output = runFindingsPanel(
+      { allFindings: findings, labels: ['gerda'] },
+      { fRev: { gerda: 1 }, fSev: { HIGH: 1 }, findPage: 5 },
+    );
+    // Should clamp to page 2 (0-based), showing 31 rows.
+    expect(countFindingDivs(output)).toBe(31);
   });
 });

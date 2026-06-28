@@ -10,11 +10,10 @@
 // CSS is an opaque template string — theme-native via --vscode-* vars.
 export const CSS = `
 *{box-sizing:border-box}
-body{margin:0;font:13px var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-editor-background)}
+body{margin:0;font:13px var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-editor-background);display:flex;flex-direction:column;height:100vh;overflow:hidden}
 .dim{opacity:.6}.pad{padding:14px}.grow{flex:1}
-#bar{position:sticky;top:0;display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-panel-border);z-index:5}
+#bar{flex-shrink:0;display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-panel-border);z-index:5}
 #title{font-weight:600}
-#toggles label{margin-right:8px;cursor:pointer;user-select:none;font-size:12px}
 /* Uniform button height: line-height:1 collapses leading so glyph entities (⛐ ↧ ⤢ 📖)
    don't inflate the button box. min-height provides a stable tap target regardless of content.
    display:inline-flex + align-items:center keeps label+glyph vertically centred without relying
@@ -134,6 +133,10 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
 .finding-fix{margin-top:4px}
 /* Changed-files panel caption — extracted from inline style. */
 .changed-caption{font-size:11px;margin-bottom:6px}
+/* Secondary changed-caption (the mtime-based 'Recently touched' label) needs a top
+   margin to separate it from the preceding agent-reported list. Uses a modifier class
+   instead of inline style= (nonce-only CSP blocks style= on innerHTML-injected elements). */
+.changed-caption-mt{margin-top:10px}
 /* M2-AgentFold: card header chevron — visible fold/unfold affordance.
    The chevron rotates 90° when the card is open. Transition matches the
    prompt-disc-chevron so all disclosures feel consistent. */
@@ -179,6 +182,13 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
 .typed-section-label{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;opacity:.6;margin:8px 0 3px}
 .typed-verdict-ok{color:var(--vscode-charts-green,#3fb950);font-weight:600}
 .typed-verdict-bad{color:var(--vscode-charts-red,#f85149);font-weight:600}
+.typed-verdict-neutral{font-weight:600;opacity:.75}
+.typed-bool-chips{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}
+.typed-bool-chip{font-size:11px;font-variant-numeric:tabular-nums;padding:1px 7px;border-radius:10px;border:1px solid var(--vscode-panel-border)}
+.typed-bool-chip.typed-verdict-ok{border-color:var(--vscode-charts-green,#3fb950)}
+.typed-bool-chip.typed-verdict-bad{border-color:var(--vscode-charts-red,#f85149)}
+.typed-finding{margin-bottom:4px;word-break:break-word}
+.typed-finding-detail{margin-top:4px;font-size:12px;word-break:break-word;overflow-wrap:break-word}
 .typed-score{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
 .typed-summary{font-size:12px;padding:4px 0;border-left:2px solid var(--vscode-panel-border);padding-left:6px;margin:4px 0;opacity:.85}
 /* Charts panel — two inline-SVG charts side by side (bar + trend).
@@ -193,8 +203,6 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
 .kpi-sublabel{font-size:10px}
 /* Stalled KPI bold weight when count > 0 — extracted from inline style; shape signal independent of color. */
 .kpi-stalled-active{font-weight:700}
-/* 'Panels:' label in the toggles bar — extracted from DOM style.cssText. */
-.panels-label{font-size:11px;opacity:.6;white-space:nowrap;align-self:center;margin-right:2px}
 /* Bar chart capped-agents note — extracted from inline style. */
 .chart-cap-note{font-size:10px;margin-top:4px}
 /* SVG chart element classes — replace inline style attributes on chart SVG elements.
@@ -203,12 +211,12 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
    style attributes have higher specificity in normal mode and would resist class overrides,
    but forced-colors UA stylesheet wins regardless; using classes is the consistent pattern. */
 .chart-bar{fill:var(--vscode-charts-blue,var(--vscode-editor-selectionBackground))}
-.chart-bar-label{fill:var(--vscode-foreground)}
-.chart-val-label{fill:var(--vscode-foreground);opacity:.7}
-.chart-trend-label{fill:var(--vscode-foreground);opacity:.6}
-.chart-axis-line{stroke:var(--vscode-panel-border);fill:none}
+.chart-bar-label{fill:var(--vscode-foreground);font-size:10px;font-family:var(--vscode-font-family,sans-serif)}
+.chart-val-label{fill:var(--vscode-foreground);opacity:.7;font-size:10px;font-family:var(--vscode-font-family,sans-serif)}
+.chart-trend-label{fill:var(--vscode-foreground);opacity:.6;font-size:9px;font-family:var(--vscode-font-family,sans-serif)}
+.chart-axis-line{stroke:var(--vscode-panel-border);fill:none;stroke-width:1}
 .chart-trend-area{fill:var(--vscode-charts-green);opacity:.12}
-.chart-trend-line{stroke:var(--vscode-charts-green);fill:none}
+.chart-trend-line{stroke:var(--vscode-charts-green);fill:none;stroke-width:1.5}
 /* Scrollable container for structured result body — prevents page overflow. */
 .result-body{max-height:340px;overflow:auto}
 /* AC4: Raw JSON <details> collapsed below the typed view.
@@ -221,6 +229,10 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
 /* AC4: Implementer markdown report view. */
 .impl-report{font-size:12px}
 .impl-status{font-weight:600;margin-bottom:4px}
+/* Findings paginator: Prev / page-count / Next row above and below the findings list. */
+.find-paginator{display:flex;align-items:center;gap:8px;margin:4px 0}
+.find-page-btn{font-size:11px;padding:2px 8px}
+.find-page-info{font-size:11px;opacity:.7;font-variant-numeric:tabular-nums}
 /* Pinned run badge in the editor meta bar — extracted from inline style. */
 .pinned-badge{margin-left:6px;font-size:10px;vertical-align:middle}
 /* Visually hidden but screen-reader accessible — standard sr-only pattern for aria-describedby targets. */
@@ -235,6 +247,28 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
 .empty-state .empty-msg{font-family:var(--vscode-editor-font-family);font-size:12px;padding:6px 8px;margin:8px 0;border-radius:4px;background:var(--vscode-textBlockQuote-background,var(--vscode-editor-background));border-left:3px solid var(--vscode-panel-border);overflow-wrap:break-word;word-break:break-word}
 .empty-state .empty-hint{font-size:12px;opacity:.75;margin-bottom:4px}
 .empty-state .empty-hint b{font-weight:600;opacity:1}
+/* Tab bar layout: #bar is flex-shrink:0 on the body flex column; #root takes flex:1.
+   #tab-content is the single scrollable region — the page body never grows unbounded. */
+#root{display:flex;flex-direction:column;flex:1;overflow:hidden}
+/* Always-visible overview KPI strip — no collapse; rendered first inside #root. */
+#overview-bar{padding:10px 12px;border-bottom:1px solid var(--vscode-panel-border);background:var(--vscode-sideBar-background);flex-shrink:0}
+/* Tab bar: horizontal row of tab buttons below the overview strip. */
+#tab-bar{display:flex;gap:0;border-bottom:1px solid var(--vscode-panel-border);background:var(--vscode-sideBar-background);flex-shrink:0;overflow-x:auto}
+/* Individual tab button — look like a flat tab, not a raised button. */
+.tab-btn{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;padding:6px 14px;cursor:pointer;font-size:12px;color:var(--vscode-foreground);display:inline-flex;align-items:center;gap:5px;white-space:nowrap;min-height:32px;line-height:1;opacity:.7}
+.tab-btn:hover{opacity:1;background:var(--vscode-list-hoverBackground)}
+.tab-btn:focus-visible{outline:2px solid var(--vscode-focusBorder);outline-offset:-2px}
+/* Active tab: 2px --vscode-focusBorder bottom border + bold weight — NOT color/opacity alone.
+   This satisfies WCAG 1.4.1 (non-color indicator) and the WAI-ARIA tabs active-tab requirement. */
+.tab-btn.tab-active{border-bottom:2px solid var(--vscode-focusBorder);font-weight:700;opacity:1}
+/* Disabled tab: muted opacity, not-allowed cursor, non-interactive. */
+.tab-btn[disabled]{opacity:.35;cursor:not-allowed}
+/* Count badge on Agents and Findings tabs — small pill, themed. */
+.tab-badge{font-size:10px;font-variant-numeric:tabular-nums;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);border-radius:8px;padding:1px 5px;min-width:16px;text-align:center}
+/* Tab content: scrollable region that fills remaining height in #root flex column.
+   padding:10px 12px creates breathing room (10px top+bottom, 12px left+right) between
+   the tab bar and the first row of content (Collapse-all button, filter chips) — v3 correction #6. */
+#tab-content{flex:1;overflow-y:auto;min-height:0;padding:10px 12px}
 /* High-contrast mode overrides: replace semi-transparent rgba() tints with
    solid system-color pairs so severity badges remain visible regardless of theme.
    Also covers typed-verdict colors which use --vscode-charts-* (may not map in HC).
@@ -243,7 +277,8 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
 @media (forced-colors:active){
   .CRITICAL,.HIGH,.MEDIUM,.LOW{background:ButtonFace;border:1px solid ButtonText;color:ButtonText}
   .st.run,.st.dead{background:ButtonFace;border:1px solid ButtonText;color:ButtonText}
-  .typed-verdict-ok,.typed-verdict-bad{color:ButtonText;border:1px solid ButtonText}
+  .typed-verdict-ok,.typed-verdict-bad,.typed-verdict-neutral{color:ButtonText;border:1px solid ButtonText}
+  .typed-bool-chip{background:ButtonFace;border:1px solid ButtonText;color:ButtonText}
   .chart-bar,rect[data-testid="chart-bar"]{fill:ButtonText}
   .charts-row,.chart-block,.chart-scroll{border-color:ButtonText}
   path[data-testid="trend-area"],.chart-trend-area{fill:ButtonFace}
@@ -253,16 +288,28 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
   /* .ok (green for live agents) and .bad (red for stalled) use color-only in normal mode.
      Map to semantic system colors so HC users still see meaningful differentiation. */
   .ok{color:LinkText}.bad{color:Mark}
-  /* SVG chart text/axis classes: forced-colors resets fill/stroke; remap to system colors. */
+  /* SVG chart text/axis classes: forced-colors resets fill/stroke; remap to system colors.
+     stroke-width and font properties are authored in the class (not inline), so the forced-colors
+     UA stylesheet can override fill/stroke while the author values for size/font remain. */
   .chart-bar-label,.chart-val-label,.chart-trend-label{fill:ButtonText;opacity:1}
-  .chart-axis-line{stroke:ButtonText}
+  .chart-axis-line{stroke:ButtonText;stroke-width:1}
+  .chart-trend-line{stroke:ButtonText;stroke-width:1.5}
+  /* Active tab indicator: forced-colors mode collapses border colors to ButtonText.
+     In high-contrast themes the 2px bottom border on .tab-active must remain visible
+     as a distinct indicator — Highlight is the recommended system color for selected
+     interactive items (analogous to a selected tab) in forced-colors mode. */
+  .tab-btn.tab-active{border-bottom-color:Highlight;border-bottom-width:2px}
+  /* Ensure disabled tabs remain clearly muted (GrayText) in HC mode. */
+  .tab-btn[disabled]{color:GrayText;border-bottom-color:transparent}
 }
-/* Soft fade on full-panel re-renders to reduce perceived flash. Opt-in only for users
-   who have not set prefers-reduced-motion — reduced-motion users get instant updates. */
-@media (prefers-reduced-motion:no-preference){
-  #root{transition:opacity 60ms ease}
+/* Respect the user's motion preference (CLAUDE.md: 'respect prefers-reduced-motion').
+   All three chevron selectors use transition:transform 120ms ease in normal mode;
+   the override removes the animation entirely for users who have opted out of motion. */
+@media (prefers-reduced-motion:reduce){
+  .panel-chevron,.card-chevron,.prompt-disc-chevron{transition:none}
 }
 `;
+
 
 // ---------------------------------------------------------------------------
 // Sidebar CSS — compact, no horizontal scroll at default sidebar width (~250px).

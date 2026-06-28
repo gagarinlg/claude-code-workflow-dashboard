@@ -33,20 +33,24 @@ features from the broader ecosystem (notably the `koh0001/claude-dashboard-exten
 "Claude Flow Monitor", which is a 7-tab teams monitor — we do NOT chase its
 breadth). We differentiate on focus and signal, not surface area.
 
-## Current tech stack (post-M0)
+## Current tech stack (post-M2)
 
 - **TypeScript** (`strict`) compiled via **esbuild** (`build.mjs`): `src/extension.ts`
   → `dist/extension.js` (CommonJS, external `vscode`).
-- Pure data functions live under `src/data/`; the webview template in
-  `src/webview/html.ts`. The host posts `{type:'snapshot', snap}` messages to the
-  webview.
+- Pure data functions live under `src/data/`; the webview is assembled by
+  `src/webview/html.ts` from five sub-modules (`css`, `js-panels`, `js-sidebar`,
+  `js-wire`). The host posts `{type:'snapshot', snap}` messages to the webview.
+  The full-panel webview uses a **tabbed layout** (Agents / Findings / Verdicts /
+  Changed / Charts / Results) with an always-visible Overview strip above the tab
+  bar, client-side findings pagination (50/page), and WAI-ARIA tabs keyboard
+  navigation.
 - Pure export functions (Markdown report generation) live under `src/export/`.
 - **vitest** unit tests under `test/`, with a 90 % coverage gate on `src/data/**`, `src/webview/**`, and `src/export/**`.
 - **ESLint** flat config (`eslint.config.mjs`, `typescript-eslint`).
 - No third-party runtime dependencies; only the `vscode` API + Node `fs/os/path`.
 - Engines: `vscode ^1.84.0`, `node >=18.0.0`.
 
-## Layout (post-M0)
+## Layout (post-M2)
 
 ```
 src/extension.ts          Activation / host wiring: commands, views, status bar, watcher, timer.
@@ -54,11 +58,16 @@ src/data/discovery.ts     findWorkflowDir, listRecentRuns, formatRelativeTime.
 src/data/parse.ts         jload, firstUserText, deriveLabel, classify, agentStats, sevCounts.
 src/data/snapshot.ts      buildSnapshot + Snapshot types (mirrors docs/DATA-FORMAT.md).
 src/data/changed.ts       walkChanged.
-src/webview/html.ts       getHtml() assembler; imports and concatenates CSS + JS sub-modules.
-src/webview/css.ts        CSS + CSS_SIDEBAR constants (full-panel and sidebar styles).
-src/webview/js-panels.ts  JS_PANELS: panel render functions (overview, agents, findings, etc.).
+src/webview/html.ts       getHtml() assembler; imports and concatenates the four sub-modules below.
+src/webview/css.ts        CSS + CSS_SIDEBAR constants (full-panel styles incl. tab bar / tab content;
+                          sidebar styles).
+src/webview/js-panels.ts  JS_PANELS: tab content renderers — overview strip, agents grid, findings
+                          list (paginated, 50/page), verdicts, changed, charts, results; typed result
+                          renderers (implementer / test-verifier / judge / completeness-critic / generic
+                          field-driven fallback).
 src/webview/js-sidebar.ts JS_SIDEBAR: compact sidebar render loop.
-src/webview/js-wire.ts    JS_WIRE: wire() event binding + render() call.
+src/webview/js-wire.ts    JS_WIRE: wire() — tab bar click + keyboard (WAI-ARIA roving tabindex),
+                          findings filter chips, pagination Prev/Next, fold toggles, event binding.
 src/export/markdown.ts    generateMarkdown() + buildExportFilename(): Markdown report generator. Pure, no disk I/O.
 dist/extension.js         Bundled output (esbuild, CommonJS). Shipped in VSIX; not in source control.
 build.mjs                 esbuild build script (production + --watch mode).
@@ -69,12 +78,16 @@ scripts/typecheck.mjs     tsc --noEmit wrapper (TS18003 suppression is a now-dor
 test/                     Vitest unit tests (*.test.ts) + fixtures/ (wf_basic, wf_partial, base).
                           Files: changed, defensive, discovery, dogfooding-polish, erika-m2-polish-verification,
                           erika-m2-verification, extension-invariants, html, html-syntax, m0-acceptance,
-                          m1-pinned-run, m2-agent-fold, m2-charts, m2-export, m2-metrics, m2-typed-results,
-                          parse, snapshot, snapshot-toctou.
-                          **Review scope note**: all 19 test files must be included in every review round.
+                          m1-pinned-run, m2-agent-fold, m2-charts, m2-export, m2-metrics,
+                          m2-typed-results, m2-typed-results-generic, parse, snapshot, snapshot-toctou.
+                          **Review scope note**: all 20 test files must be included in every review round.
                           extension-invariants.test.ts in particular covers FSWatcher cleanup on re-activation,
                           safeSnap workflowDir stripping, GPL-3.0-or-later license, command-id constraints,
                           and coverage gates — do not omit it from review scope.
+scripts/screenshot.mjs    Headless screenshot harness: bundles getHtml() + buildSnapshot() via esbuild,
+                          renders the real webview in Playwright/Chromium against the newest local run
+                          (or a synthetic snapshot), and writes PNGs to `.review-tmp/shots/`. Use
+                          `npm run screenshots` to visually self-check layout changes.
 package.json              Manifest: views container, dashboard webview, commands, keybinding, settings.
 media/                    icon.png (tile), icon.svg (source, ignored), activity.svg (activity-bar icon).
 WORKFLOW-AUTHORING.md     Guide shipped in the VSIX; opened via the "Open Workflow Authoring Guide" command.
@@ -138,6 +151,12 @@ See **docs/DATA-FORMAT.md** for the exact on-disk shapes these rely on.
   user keybindings/settings); only user-facing titles use the full product name.
 - **Unofficial:** this is a community project, **not affiliated with Anthropic** —
   keep that disclaimer in the README and Marketplace listing.
+- **Interactive element pattern:** `prompt-disc-hdr` is a real `<button>` element
+  (native semantics, no ARIA needed). The agent card `.row`, filter chip `.chip`, and
+  finding title `.ttl` remain `div`/`span` + `role="button"` due to CSS layout
+  constraints (flex children, inline flow). All three carry `tabindex="0"`, correct
+  `aria-pressed`/`aria-expanded`, and keyboard handlers — accessibility is functionally
+  equivalent. Do not "fix" the pattern inconsistency without addressing layout first.
 
 ## Common commands
 
@@ -159,6 +178,9 @@ npm test
 
 # Run tests with coverage report (90 % gate on src/data/**, src/webview/**, and src/export/**):
 npm run coverage
+
+# Headless screenshot harness (Playwright/Chromium) → .review-tmp/shots/*.png:
+npm run screenshots
 
 # Package a VSIX locally (validates the manifest; triggers npm run build via vscode:prepublish):
 npx @vscode/vsce package

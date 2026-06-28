@@ -2,7 +2,7 @@
   "name": "claude-code-workflow-dashboard",
   "displayName": "Claude Code Workflow Dashboard",
   "description": "Live dashboard for Claude Code workflow runs — loop & agent overview, per-agent output, and review findings, updated in real time. Unofficial community tool, not affiliated with Anthropic.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "malte-langermann",
   "author": {
     "name": "Malte Langermann",
@@ -169,7 +169,7 @@
         "claudeWorkflow.repoDir": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Optional repository path; when set, the **Changed files** panel lists files modified there in the last 2 minutes. Leave empty to use the first open workspace folder."
+          "markdownDescription": "Optional repository path; when set, the **Changed** tab shows files recently touched there (within the last 15 minutes). Leave empty to use the first open workspace folder."
         },
         "claudeWorkflow.refreshMs": {
           "type": "number",

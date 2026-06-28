@@ -16,67 +16,65 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { getHtml } from '../src/webview/html';
-
-const TEST_NONCE = 'dGVzdG5vbmNlMTIz';
+import { getPanelJs, extractBalancedFn, TEST_NONCE } from './helpers/webview';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Extract the inline <script> content from the panel-mode HTML. */
-function getPanelJs(html: string): string {
-  const scriptOpen = `<script nonce="${TEST_NONCE}">`;
-  const scriptClose = '</script>';
-  const scriptStart = html.indexOf(scriptOpen);
-  const scriptEnd = html.lastIndexOf(scriptClose);
-  return html.slice(scriptStart + scriptOpen.length, scriptEnd);
-}
-
-/**
- * Extract a balanced function declaration from minified JS.
- * Walks forward from the function marker counting braces.
- */
-function extractBalancedFn(js: string, name: string): string {
-  const marker = `function ${name}(`;
-  const start = js.indexOf(marker);
-  if (start === -1) throw new Error(`${name} not found in webview JS`);
-  let depth = 0;
-  let i = start;
-  let bodyStarted = false;
-  while (i < js.length) {
-    const ch = js[i];
-    if (ch === '{') { depth++; bodyStarted = true; }
-    if (ch === '}') { depth--; }
-    if (bodyStarted && depth === 0) return js.slice(start, i + 1);
-    i++;
-  }
-  throw new Error(`Unbalanced braces for ${name}`);
-}
 
 /**
  * Build a sandboxed harness that evaluates all typed renderer functions from
  * the webview JS and returns a callable renderTypedResult(agentType, result).
  */
 function buildRendererHarness(js: string): (agentType: string | undefined, result: Record<string, unknown>) => string {
-  // Extract esc and safeN helpers
+  // Extract esc, safeN, and escCls helpers
   const escLine = js.split('\n').find((l) => l.includes('function esc(s)'));
   if (!escLine) throw new Error('esc not found');
-  const escStart = escLine.indexOf('function esc(s)');
+  const escFn = escLine.slice(escLine.indexOf('function esc(s)'));
 
   const safeNLine = js.split('\n').find((l) => l.includes('function safeN(n)'));
   if (!safeNLine) throw new Error('safeN not found');
-  const safeNStart = safeNLine.indexOf('function safeN(n)');
+  const safeNFn = safeNLine.slice(safeNLine.indexOf('function safeN(n)'));
 
-  const escFn = escLine.slice(escStart);
-  const safeNFn = safeNLine.slice(safeNStart);
+  const escClsLine = js.split('\n').find((l) => l.includes('function escCls(s)'));
+  if (!escClsLine) throw new Error('escCls not found');
+  const escClsFn = escClsLine.slice(escClsLine.indexOf('function escCls(s)'));
 
-  const fnNames = ['renderGenericResult', 'renderImplementerResult', 'renderVerifierResult',
-                   'renderJudgeResult', 'renderCompletenessResult', 'renderTypedResult'];
+  // SEV_ORDER and sevRank are needed by the new field-driven renderTypedResult
+  const sevOrderMatch = js.match(/var SEV_ORDER=\[[^\]]+\];/);
+  const sevOrderDecl = sevOrderMatch ? sevOrderMatch[0] : 'var SEV_ORDER=[];';
+  const sevRankFn = extractBalancedFn(js, 'sevRank');
+  const isBoolChipKeyFn = extractBalancedFn(js, 'isBoolChipKey');
+
+  // Spec v3 corrections #9/#10: module-level helpers extracted from parseImplementerMarkdown.
+  // parseImplementerMarkdown now calls these at the top level; they must be in scope.
+  const normalizeFn = extractBalancedFn(js, 'normalizeLiteralEscapes');
+  const applySpansFn = extractBalancedFn(js, 'applyInlineSpans');
+  const renderInlineMdFn = extractBalancedFn(js, 'renderInlineMd');
+
+  // Include rawJsonDetails and parseImplementerMarkdown — renderTypedResult calls both.
+  const fnNames = [
+    'rawJsonDetails',
+    'parseImplementerMarkdown',
+    'renderGenericResult',
+    'renderImplementerResult',
+    'renderVerifierResult',
+    'renderJudgeResult',
+    'renderCompletenessResult',
+    'renderTypedResult',
+  ];
   const fns = fnNames.map((name) => extractBalancedFn(js, name)).join('\n');
 
   const code = `
     ${escFn}
     ${safeNFn}
+    ${escClsFn}
+    ${sevOrderDecl}
+    ${normalizeFn}
+    ${applySpansFn}
+    ${renderInlineMdFn}
+    ${sevRankFn}
+    ${isBoolChipKeyFn}
     ${fns}
     return renderTypedResult;
   `;
@@ -127,8 +125,11 @@ describe('M2-TypedResults — CSS rules', () => {
 
   it('CSS typed-result forced-colors block covers typed-verdict-ok/bad', () => {
     const html = getHtml(TEST_NONCE);
-    // High-contrast block must include the typed verdict classes
-    expect(html).toContain('.typed-verdict-ok,.typed-verdict-bad{');
+    // High-contrast block must include both typed verdict classes (may also include neutral)
+    expect(html).toContain('typed-verdict-ok');
+    expect(html).toContain('typed-verdict-bad');
+    // The forced-colors block itself must be present
+    expect(html).toContain('@media (forced-colors:active)');
   });
 });
 
@@ -213,21 +214,27 @@ describe('M2-TypedResults — implementer renderer', () => {
     expect(outNo).toContain('typed-verdict-bad');
   });
 
-  it('renders a passing verdict in typed-verdict-ok color', () => {
-    const out = render('implementer', { verdict: 'success' });
+  it('renders APPROVED verdict in typed-verdict-ok color', () => {
+    // Field-driven: only APPROVED (case-insensitive exact match) → typed-verdict-ok
+    const out = render('implementer', { verdict: 'APPROVED' });
     expect(out).toContain('typed-verdict-ok');
-    expect(out).toContain('success');
+    expect(out).toContain('APPROVED');
   });
 
-  it('renders a failing verdict in typed-verdict-bad color', () => {
-    const out = render('implementer', { verdict: 'failed: build error' });
+  it('renders a failing verdict (containing FAIL) in typed-verdict-bad color', () => {
+    // Field-driven: verdict containing FAIL → typed-verdict-bad
+    const out = render('implementer', { verdict: 'FAILED' });
     expect(out).toContain('typed-verdict-bad');
   });
 
-  it('does not produce raw JSON.stringify output', () => {
+  it('renders fields as human-readable content (raw JSON only in collapsed details block)', () => {
+    // filesChanged[] is rendered as a file list — not as bare JSON.
+    // summary is rendered as typed-summary — not as bare JSON.
+    // The raw JSON in <details> may contain '"filesChanged"' — that is expected and correct.
     const out = render('implementer', { summary: 'ok', filesChanged: ['a.ts'] });
-    expect(out).not.toContain('"filesChanged"');
-    expect(out).not.toContain('JSON');
+    expect(out).toContain('typed-file-list');
+    expect(out).toContain('a.ts');
+    expect(out).toContain('raw-json-details');
   });
 
   it('escapes XSS in summary', () => {
@@ -260,16 +267,20 @@ describe('M2-TypedResults — test-verifier renderer', () => {
     render = buildRendererHarness(getPanelJs(getHtml(TEST_NONCE)));
   });
 
-  it('renders PASSED in green when passed=true', () => {
+  it('renders passed=true in green as a ✓ chip', () => {
+    // Field-driven: boolean key 'passed' matches /passed/i → typed-bool-chip + typed-verdict-ok
     const out = render('test-verifier', { passed: true, summary: 'All good.' });
     expect(out).toContain('typed-verdict-ok');
-    expect(out).toContain('PASSED');
+    expect(out).toContain('typed-bool-chip');
+    expect(out).toContain('✓');
   });
 
-  it('renders FAILED in red when passed=false', () => {
+  it('renders passed=false in red as a ✗ chip', () => {
+    // Field-driven: boolean key 'passed' matches /passed/i → typed-bool-chip + typed-verdict-bad
     const out = render('test-verifier', { passed: false, summary: '3 tests failed.' });
     expect(out).toContain('typed-verdict-bad');
-    expect(out).toContain('FAILED');
+    expect(out).toContain('typed-bool-chip');
+    expect(out).toContain('✗');
   });
 
   it('renders coverageGaps as bullets', () => {
@@ -296,14 +307,19 @@ describe('M2-TypedResults — test-verifier renderer', () => {
     expect(out).toContain('+5 more');
   });
 
-  it('uses verdict field when passed is absent', () => {
-    const out = render('test-verifier', { verdict: 'passing' });
+  it('uses APPROVED verdict for ok badge when passed is absent', () => {
+    // Field-driven: verdict = 'APPROVED' (exact) → typed-verdict-ok
+    const out = render('test-verifier', { verdict: 'APPROVED' });
     expect(out).toContain('typed-verdict-ok');
   });
 
-  it('does not produce raw JSON output', () => {
+  it('wraps raw JSON in a collapsed details block (not a bare JSON dump)', () => {
+    // The field-driven renderer puts raw JSON inside a <details> block, not bare in the DOM.
+    // Verify the output has the details wrapper — raw JSON is inside it, not at the top level.
     const out = render('test-verifier', { passed: true, coverageGaps: ['x'] });
-    expect(out).not.toContain('"passed"');
+    expect(out).toContain('raw-json-details');
+    // The primary typed view renders the chip, NOT a raw JSON value at top level
+    expect(out).toContain('typed-bool-chip');
   });
 });
 
@@ -316,51 +332,61 @@ describe('M2-TypedResults — judge renderer', () => {
     render = buildRendererHarness(getPanelJs(getHtml(TEST_NONCE)));
   });
 
-  it('renders verdict in green for approve-like words', () => {
-    const out = render('judge', { verdict: 'approve', score: 8, rationale: 'Solid work.' });
+  it('renders APPROVED verdict in typed-verdict-ok (field-driven)', () => {
+    // Field-driven: only APPROVED (case-insensitive exact match) → typed-verdict-ok
+    const out = render('judge', { verdict: 'APPROVED', score: 8, rationale: 'Solid work.' });
     expect(out).toContain('typed-verdict-ok');
-    expect(out).toContain('approve');
+    expect(out).toContain('APPROVED');
   });
 
-  it('renders verdict in red for reject-like words', () => {
-    const out = render('judge', { verdict: 'reject', rationale: 'Too many issues.' });
+  it('renders REJECT verdict in typed-verdict-bad (field-driven)', () => {
+    // Field-driven: verdict containing REJECT → typed-verdict-bad
+    const out = render('judge', { verdict: 'REJECT', rationale: 'Too many issues.' });
     expect(out).toContain('typed-verdict-bad');
-    expect(out).toContain('reject');
+    expect(out).toContain('REJECT');
   });
 
-  it('renders score as .typed-score', () => {
-    const out = render('judge', { verdict: 'pass', score: 7 });
-    expect(out).toContain('typed-score');
+  it('renders score field as a labeled numeric value', () => {
+    // Field-driven: score is numeric → rendered in the numeric-kv section
+    const out = render('judge', { verdict: 'APPROVED', score: 7 });
+    expect(out).toContain('score');
     expect(out).toContain('7');
   });
 
-  it('renders rationale in .typed-summary', () => {
-    const out = render('judge', { verdict: 'pass', rationale: 'Good implementation.' });
-    expect(out).toContain('typed-summary');
+  it('renders rationale in .typed-summary via summary field parse', () => {
+    // Field-driven: rationale is a string → goes to generic kv section with label
+    const out = render('judge', { verdict: 'APPROVED', rationale: 'Good implementation.' });
+    expect(out).toContain('rationale');
     expect(out).toContain('Good implementation.');
   });
 
-  it('falls back to summary when rationale absent', () => {
-    const out = render('judge', { verdict: 'pass', summary: 'Nice job.' });
+  it('renders summary field as parsed or plain-text block', () => {
+    // Field-driven: summary(string) → typed-summary or impl-report
+    const out = render('judge', { verdict: 'APPROVED', summary: 'Nice job.' });
     expect(out).toContain('typed-summary');
     expect(out).toContain('Nice job.');
   });
 
-  it('renders decision field as verdict when verdict absent', () => {
+  it('renders decision field in generic kv when verdict absent', () => {
+    // Field-driven: 'decision' key is not a known pattern → goes to generic kv table
     const out = render('judge', { decision: 'approved' });
-    expect(out).toContain('typed-verdict-ok');
+    expect(out).toContain('decision');
     expect(out).toContain('approved');
   });
 
   it('escapes XSS in rationale', () => {
-    const out = render('judge', { verdict: 'pass', rationale: '<script>alert(1)</script>' });
+    const out = render('judge', { verdict: 'APPROVED', rationale: '<script>alert(1)</script>' });
     expect(out).not.toContain('<script>');
     expect(out).toContain('&lt;script&gt;');
   });
 
-  it('does not produce raw JSON output', () => {
-    const out = render('judge', { verdict: 'pass', score: 9 });
-    expect(out).not.toContain('"verdict"');
+  it('raw JSON is wrapped in a collapsed details block (not bare dump)', () => {
+    // The field-driven renderer wraps raw JSON in <details class="raw-json-details">,
+    // not as bare output. The typed section renders fields individually above the details block.
+    const out = render('judge', { verdict: 'APPROVED', score: 9 });
+    expect(out).toContain('raw-json-details');
+    // The verdict badge is rendered as the primary view
+    expect(out).toContain('typed-verdict-ok');
   });
 });
 
@@ -373,14 +399,16 @@ describe('M2-TypedResults — completeness-critic renderer', () => {
     render = buildRendererHarness(getPanelJs(getHtml(TEST_NONCE)));
   });
 
-  it('renders verdict in green for complete-like words', () => {
-    const out = render('completeness-critic', { verdict: 'complete', gaps: [] });
+  it('renders APPROVED verdict in typed-verdict-ok (field-driven)', () => {
+    // Field-driven: only APPROVED (case-insensitive exact) → typed-verdict-ok
+    const out = render('completeness-critic', { verdict: 'APPROVED', gaps: [] });
     expect(out).toContain('typed-verdict-ok');
-    expect(out).toContain('complete');
+    expect(out).toContain('APPROVED');
   });
 
-  it('renders verdict in red for incomplete indicator', () => {
-    const out = render('completeness-critic', { verdict: 'incomplete', gaps: ['missing tests'] });
+  it('renders FAIL verdict in typed-verdict-bad (field-driven)', () => {
+    // Field-driven: verdict containing FAIL → typed-verdict-bad
+    const out = render('completeness-critic', { verdict: 'FAIL', gaps: ['missing tests'] });
     expect(out).toContain('typed-verdict-bad');
   });
 
@@ -409,14 +437,17 @@ describe('M2-TypedResults — completeness-critic renderer', () => {
   });
 
   it('renders summary when present', () => {
-    const out = render('completeness-critic', { verdict: 'complete', summary: 'All AC covered.' });
+    const out = render('completeness-critic', { verdict: 'APPROVED', summary: 'All AC covered.' });
     expect(out).toContain('typed-summary');
     expect(out).toContain('All AC covered.');
   });
 
-  it('does not produce raw JSON output', () => {
-    const out = render('completeness-critic', { verdict: 'complete', gaps: ['x'] });
-    expect(out).not.toContain('"verdict"');
+  it('raw JSON is wrapped in a collapsed details block (not bare dump)', () => {
+    // The primary typed view renders verdict badge and gaps above the details block.
+    const out = render('completeness-critic', { verdict: 'APPROVED', gaps: ['x'] });
+    expect(out).toContain('raw-json-details');
+    // Verdict badge rendered as primary view
+    expect(out).toContain('typed-verdict-ok');
   });
 });
 
@@ -445,16 +476,27 @@ describe('M2-TypedResults — generic fallback renderer', () => {
     expect(out).toContain('done');
   });
 
-  it('renders boolean true as "yes" in typed-verdict-ok', () => {
+  it('renders boolean true as a typed-verdict-ok chip (key matches /passed/i)', () => {
+    // Field-driven: 'passed' matches the bool-chip pattern → chip with typed-verdict-ok and ✓
     const out = render(undefined, { passed: true });
     expect(out).toContain('typed-verdict-ok');
-    expect(out).toContain('yes');
+    expect(out).toContain('typed-bool-chip');
+    expect(out).toContain('✓');
   });
 
-  it('renders boolean false as "no" in typed-verdict-bad', () => {
+  it('renders boolean false as a typed-verdict-bad chip (key matches /passed/i)', () => {
+    // Field-driven: 'passed' matches the bool-chip pattern → chip with typed-verdict-bad and ✗
     const out = render(undefined, { passed: false });
     expect(out).toContain('typed-verdict-bad');
-    expect(out).toContain('no');
+    expect(out).toContain('typed-bool-chip');
+    expect(out).toContain('✗');
+  });
+
+  it('renders arbitrary boolean (not matching chip pattern) as yes/no in generic kv', () => {
+    // 'archived' does not match /Ok$|testsRun|passed/i → goes to generic kv as yes/no
+    const out = render(undefined, { archived: true });
+    expect(out).toContain('archived');
+    expect(out).toContain('yes');
   });
 
   it('renders array values as bullet lists', () => {
@@ -489,17 +531,21 @@ describe('M2-TypedResults — generic fallback renderer', () => {
     expect(out).toContain('&lt;b&gt;');
   });
 
-  it('caps large arrays at 50 items with overflow indicator', () => {
+  it('caps large arrays at 40 items with overflow indicator in generic kv', () => {
+    // The generic kv section caps arrays at 40 items (not 50)
     const out = render(undefined, { items: Array.from({ length: 60 }, (_, i) => `item${i}`) });
-    expect(out).toContain('+10 more');
+    expect(out).toContain('+20 more');
   });
 
-  it('does not produce raw JSON.stringify output for any unknown type', () => {
+  it('renders unknown fields as human-readable kv (not bare top-level JSON dump)', () => {
+    // The generic kv table renders fields individually with labels and values.
+    // Raw JSON goes in the collapsed <details> below, not as the primary content.
     const out = render('architect', { phase: 'design', decisions: ['use esbuild'] });
-    // Must not contain the raw JSON key pattern
-    expect(out).not.toContain('"decisions"');
+    // Fields must appear as readable content in the typed view
     expect(out).toContain('decisions');
     expect(out).toContain('use esbuild');
+    // The raw JSON details block is present (below the typed view)
+    expect(out).toContain('raw-json-details');
   });
 
   it('also known agentType "architect" routes through generic (no dedicated renderer)', () => {

@@ -56,8 +56,7 @@ import * as path from 'path';
 import { getHtml } from '../src/webview/html';
 import { generateMarkdown, cmpSev } from '../src/export/markdown';
 import type { SnapshotOk } from '../src/data/snapshot';
-
-const TEST_NONCE = 'dGVzdG5vbmNlMTIz';
+import { getPanelJs, extractBalancedFn, TEST_NONCE } from './helpers/webview';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -69,31 +68,6 @@ function getPanelHtml(): string {
 
 function getSidebarHtml(): string {
   return getHtml(TEST_NONCE, 2, 200, 'sidebar');
-}
-
-function getPanelJs(html: string): string {
-  const open = `<script nonce="${TEST_NONCE}">`;
-  const close = '</script>';
-  const s = html.indexOf(open);
-  const e = html.lastIndexOf(close);
-  return html.slice(s + open.length, e);
-}
-
-function extractBalancedFn(js: string, name: string): string {
-  const marker = `function ${name}(`;
-  const start = js.indexOf(marker);
-  if (start === -1) throw new Error(`${name} not found in webview JS`);
-  let depth = 0;
-  let i = start;
-  let bodyStarted = false;
-  while (i < js.length) {
-    const ch = js[i];
-    if (ch === '{') { depth++; bodyStarted = true; }
-    if (ch === '}') { depth--; }
-    if (bodyStarted && depth === 0) return js.slice(start, i + 1);
-    i++;
-  }
-  throw new Error(`Unbalanced braces for ${name}`);
 }
 
 function buildGenericRendererHarness(js: string): (obj: Record<string, unknown>) => string {
@@ -129,6 +103,7 @@ function makeSnap(overrides: Partial<SnapshotOk> = {}): SnapshotOk {
     verdicts: {},
     verdictLabels: {},
     changed: null,
+    changedByAgents: [],
     ...overrides,
   };
 }
@@ -319,35 +294,43 @@ describe('A11y — chart SVG elements have role="img" and aria-label', () => {
 // A11y — panel toggle checkboxes have associated labels
 // ===========================================================================
 
-describe('A11y — panel toggles use label+checkbox (not orphaned inputs)', () => {
-  // WCAG 1.3.1 / 4.1.2: form controls must have an associated label.
-  // The toggles use document.createElement('label') with for= → cb.id ('toggle-'+k).
+describe('A11y — panel toggles replaced by WAI-ARIA tablist (M3-Layout redesign)', () => {
+  // M3-Layout: the #toggles checkbox group and PANELS array were removed.
+  // Navigation is now handled by a WAI-ARIA tablist with keyboard support.
 
-  it('panel toggle build code creates a <label> element for each checkbox', () => {
+  it('panel JS does NOT contain checkbox toggle builder (PANELS removed)', () => {
     const js = getPanelJs(getPanelHtml());
-    // The toggle builder creates both a label and checkbox, links them with for/id
-    expect(js).toContain("createElement('label')");
-    expect(js).toContain("createElement('input')");
+    // The old toggle builder used createElement('label') + 'toggle-'+k.
+    // These must be gone — the tab bar replaces them.
+    expect(js).not.toContain("'toggle-'+k");
+    expect(js).not.toContain("setAttribute('for','toggle-'+k)");
   });
 
-  it('panel toggle checkbox has id="toggle-" prefix (for <label for=> linkage)', () => {
+  it('panel JS has tabBar() function returning role="tablist" structure', () => {
     const js = getPanelJs(getPanelHtml());
-    // The id is set as 'toggle-'+k which the label's for= attribute references
-    expect(js).toContain("'toggle-'+k");
+    expect(js).toContain('function tabBar()');
+    expect(js).toContain('role="tablist"');
   });
 
-  it('panel toggle label sets for= attribute to match the checkbox id', () => {
-    const js = getPanelJs(getPanelHtml());
-    // l.setAttribute('for','toggle-'+k) links the label to the checkbox
-    expect(js).toContain("setAttribute('for','toggle-'+k)");
-  });
-
-  it('panel toggle group has role="group" and aria-label="Show panels"', () => {
-    // The static #toggles div carries role="group" and aria-label so screen readers
-    // announce the purpose of the checkbox group.
+  it('panel HTML has role="tablist" (replaces the removed role="group" checkbox bar)', () => {
+    // The tablist replaces the old role="group" aria-label="Show panels" checkboxes.
+    // The tablist itself carries an aria-label for the group context.
     const html = getPanelHtml();
-    expect(html).toContain('role="group"');
-    expect(html).toContain('aria-label="Show panels"');
+    expect(html).toContain('role="tablist"');
+    expect(html).toContain('aria-label="Dashboard sections"');
+    // The old panel-toggle group must be gone.
+    expect(html).not.toContain('aria-label="Show panels"');
+    expect(html).not.toContain('id="toggles"');
+  });
+
+  it('panel JS has wireTabBar() wiring click + keyboard on tab buttons', () => {
+    const js = getPanelJs(getPanelHtml());
+    expect(js).toContain('function wireTabBar()');
+    // Click handler activates tabs.
+    expect(js).toContain('activateTab');
+    // Keyboard roving tabindex implemented.
+    expect(js).toContain("'ArrowRight'");
+    expect(js).toContain("'ArrowLeft'");
   });
 });
 
@@ -713,47 +696,38 @@ describe('Markdown export — cmpSev NITPICK ordering (Viktor)', () => {
 // Layout MEDs: Results panel default state + scroll + chart container
 // ===========================================================================
 
-describe('Layout — Results panel default state (results:0 = hidden on first load)', () => {
-  // ROADMAP §M2-Layout: "Results panel hidden by default and moved to end of PANELS;
-  // Collapse-all / Expand-all button with dynamic label; card fold state persists."
+describe('Layout — Results panel default state (M3-Layout redesign: tabbed layout)', () => {
+  // M3-Layout: PANELS array and state.on removed; navigation is tabbed.
+  // Results is the last tab (after Charts) — matches the old ordering requirement.
+  // The in-tab collapsible panel() for Results starts expanded (panelOpen.results:1).
 
-  it('JS initial state has results:0 (Results panel hidden by default)', () => {
+  it('JS tabDefs() places "results" tab after "charts" tab (end of tab order)', () => {
+    // The tab order in tabDefs() must still end with: ...charts, results.
     const js = getPanelJs(getPanelHtml());
-    // The state initialisation must include results:0 so the panel starts collapsed
-    // Matches: state={on:{...,results:0,...},...}
-    expect(js).toContain('results:0');
+    const tabDefsIdx = js.indexOf('function tabDefs()');
+    expect(tabDefsIdx).toBeGreaterThan(-1);
+    const tabDefsSlice = js.slice(tabDefsIdx, tabDefsIdx + 1000);
+    const chartsPos = tabDefsSlice.indexOf("key:'charts'");
+    const resultsPos = tabDefsSlice.indexOf("key:'results'");
+    expect(chartsPos).toBeGreaterThan(-1);
+    expect(resultsPos).toBeGreaterThan(chartsPos);
   });
 
-  it('JS PANELS array places "results" after "charts" (end of panel order)', () => {
-    // ROADMAP §M2-Layout: "Results panel hidden by default and moved to end of PANELS"
-    // The PANELS array must have 'results' AFTER 'charts' so the Results toggle
-    // appears at the end of the panel show/hide bar, not in the middle.
+  it('JS state does NOT have on:{results:0} (state.on removed in M3-Layout)', () => {
     const js = getPanelJs(getPanelHtml());
-    // Find the PANELS array declaration — it is a const/var assignment ending with ]
-    // The declaration looks like: PANELS=[['k','Label'],...,['charts','Charts']]
-    // Use bracket-counting to find the outer ] closing the array.
-    const panelsStart = js.indexOf('PANELS=[');
-    expect(panelsStart).toBeGreaterThan(-1);
-    // Walk forward counting brackets to find the outer closing ]
-    let depth = 0;
-    let i = panelsStart + 'PANELS='.length; // start at the [
-    let panelsEnd = -1;
-    while (i < js.length) {
-      if (js[i] === '[') depth++;
-      if (js[i] === ']') {
-        depth--;
-        if (depth === 0) { panelsEnd = i; break; }
-      }
-      i++;
-    }
-    expect(panelsEnd).toBeGreaterThan(panelsStart);
-    const panelsDecl = js.slice(panelsStart, panelsEnd + 1);
-    const chartsPos = panelsDecl.indexOf("'charts'");
-    const resultsPos = panelsDecl.indexOf("'results'");
-    expect(chartsPos).toBeGreaterThan(-1);
-    expect(resultsPos).toBeGreaterThan(-1);
-    // results must appear AFTER charts — this is the ROADMAP requirement
-    expect(resultsPos).toBeGreaterThan(chartsPos);
+    // state.on was the panel visibility map; it is removed.
+    // Tabs replace it — Results is enabled when structuredResults > 0.
+    expect(js).not.toContain('on:{');
+    // state.activeTab defaults to agents
+    expect(js).toContain("activeTab:_s.activeTab||'agents'");
+  });
+
+  it('M3 v3 BINDING: panelOpen.results does NOT exist (Results tab renders directly, no collapse state)', () => {
+    // M3 v3 BINDING (AC11): resultsPanel() renders content directly without panel() wrapper.
+    // panelOpen.results key is dropped from the state initializer.
+    const js = getPanelJs(getPanelHtml());
+    const stateDecl = js.slice(js.indexOf('let state={'), js.indexOf('};', js.indexOf('let state={')));
+    expect(stateDecl).not.toContain('results:');
   });
 });
 

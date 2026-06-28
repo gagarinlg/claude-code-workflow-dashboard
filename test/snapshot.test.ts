@@ -707,3 +707,130 @@ describe('buildSnapshot — M2-AgentPrompt: prompt field per agent', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// changedByAgents: union/dedupe of filesChanged from agent structured results
+// (spec v3 correction #7)
+// ---------------------------------------------------------------------------
+describe('buildSnapshot — changedByAgents union/dedupe', () => {
+  let tmpBase: string;
+  let wfDir: string;
+
+  const TRANSCRIPT = (id: string) =>
+    `{"type":"user","message":{"content":"You are agent ${id}"}}\n`;
+
+  const makeJournal = (entries: object[]) =>
+    entries.map((e) => JSON.stringify(e)).join('\n') + '\n';
+
+  const makeCfg = (base: string): Cfg => ({
+    base,
+    repo: '',
+    refreshMs: 4000,
+    statusBar: true,
+    roleRules: DEFAULT_ROLE_RULES,
+  });
+
+  beforeEach(() => {
+    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'snap-by-agents-'));
+    wfDir = path.join(tmpBase, 'workflows', 'wf_by_agents_test');
+    fs.mkdirSync(wfDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(tmpBase, { recursive: true, force: true }); } catch {}
+  });
+
+  it('unions filesChanged from two agents, deduplicates, and sorts', () => {
+    // Two agents: a1 reports ['b.ts', 'a.ts'], a2 reports ['c.ts', 'a.ts'] — 'a.ts' is a dupe.
+    const journal = makeJournal([
+      { type: 'result', agentId: 'a1', result: { filesChanged: ['b.ts', 'a.ts'], summary: 'done' } },
+      { type: 'result', agentId: 'a2', result: { filesChanged: ['c.ts', 'a.ts'], summary: 'done' } },
+    ]);
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-a1.jsonl'), TRANSCRIPT('a1'));
+    fs.writeFileSync(path.join(wfDir, 'agent-a2.jsonl'), TRANSCRIPT('a2'));
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Should be deduplicated and sorted: a.ts, b.ts, c.ts
+    expect(result.changedByAgents).toEqual(['a.ts', 'b.ts', 'c.ts']);
+  });
+
+  it('agents with no filesChanged field contribute nothing', () => {
+    // a1 has filesChanged, a2 does not.
+    const journal = makeJournal([
+      { type: 'result', agentId: 'a1', result: { filesChanged: ['x.ts'], summary: 'done' } },
+      { type: 'result', agentId: 'a2', result: { summary: 'done, no files' } },
+    ]);
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-a1.jsonl'), TRANSCRIPT('a1'));
+    fs.writeFileSync(path.join(wfDir, 'agent-a2.jsonl'), TRANSCRIPT('a2'));
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.changedByAgents).toEqual(['x.ts']);
+  });
+
+  it('agents with filesChanged:[] contribute nothing', () => {
+    const journal = makeJournal([
+      { type: 'result', agentId: 'a1', result: { filesChanged: [], summary: 'no changes' } },
+    ]);
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-a1.jsonl'), TRANSCRIPT('a1'));
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.changedByAgents).toEqual([]);
+  });
+
+  it('changedByAgents is always an array even when wf dir has only a journal', () => {
+    // Journal exists but no agents at all.
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), '');
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    if (!result.ok) return; // empty wf is ok:true or ok:false depending on impl; either is valid
+    expect(Array.isArray(result.changedByAgents)).toBe(true);
+  });
+
+  it('reviewer-type results (findings-bearing) do not contribute to changedByAgents', () => {
+    // A findings result sets a.findings (not a.result) in the agent — changedByAgents only
+    // reads from a.result which is undefined for findings agents.
+    const journal = makeJournal([
+      { type: 'result', agentId: 'a1', result: { findings: [{ severity: 'HIGH', title: 'T1' }], verdict: 'found' } },
+    ]);
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-a1.jsonl'), TRANSCRIPT('a1'));
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Reviewer results set a.findings, not a.result — changedByAgents stays empty.
+    expect(result.changedByAgents).toEqual([]);
+  });
+
+  it('structuredResult with filesChanged contributes to changedByAgents regardless of agentType', () => {
+    // An implementer result carrying filesChanged[] must appear in changedByAgents.
+    // This is the positive-path coverage: the exclusion test above only covers the
+    // findings-type path; this test ensures the accumulation path works.
+    const journal = makeJournal([
+      { type: 'result', agentId: 'a2', result: { filesChanged: ['src/foo.ts', 'src/bar.ts'], verdict: 'APPROVED' } },
+    ]);
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-a2.jsonl'), TRANSCRIPT('a2'));
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // filesChanged from the agent result must be accumulated in changedByAgents.
+    expect(result.changedByAgents).toContain('src/foo.ts');
+    expect(result.changedByAgents).toContain('src/bar.ts');
+  });
+});

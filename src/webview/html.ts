@@ -20,8 +20,8 @@
 // Sub-module layout (all under src/webview/):
 //   css.ts         — CSS + CSS_SIDEBAR constants (~320 lines)
 //   js-sidebar.ts  — JS_SIDEBAR constant (~105 lines, sidebar render loop)
-//   js-panels.ts   — JS_PANELS constant (~440 lines, panel functions + render)
-//   js-wire.ts     — JS_WIRE constant (~65 lines, wire() + render() call)
+//   js-panels.ts   — JS_PANELS constant (~1030 lines, panel functions + render)
+//   js-wire.ts     — JS_WIRE constant (~90 lines, wire() + render() call)
 
 import { CSS, CSS_SIDEBAR } from './css';
 import { JS_SIDEBAR } from './js-sidebar';
@@ -35,10 +35,10 @@ const JS = JS_PANELS + JS_WIRE;
 // mode:'panel' is the full editor-panel view (default, unchanged).
 // mode:'sidebar' renders a compact at-a-glance summary suited for the
 // narrow sidebar pane — no six-panel layout, no horizontal overflow.
-export function getHtml(nonce: string, changedMaxMin = 2, maxAgents = 200, mode: 'panel' | 'sidebar' = 'panel', staleSecs = 180): string {
+export function getHtml(nonce: string, changedMaxMin = 15, maxAgents = 200, mode: 'panel' | 'sidebar' = 'panel', staleSecs = 180): string {
   // changedMaxMin, maxAgents, and staleSecs are passed through to the JS template so
   // changedPanel(), agentsPanel(), and the Stalled KPI can display correct thresholds
-  // without hardcoded literals. Defaults match CHANGED_MAX_SECS=120/MAX_AGENTS=200 in
+  // without hardcoded literals. Defaults match CHANGED_MAX_SECS=900/MAX_AGENTS=200 in
   // snapshot.ts and STALE_SECS=180 in parse.ts.
   // staleSecs is rendered in minutes when >= 60 so the UI sub-label stays compact.
   const staleLabel = staleSecs >= 60
@@ -60,7 +60,7 @@ export function getHtml(nonce: string, changedMaxMin = 2, maxAgents = 200, mode:
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
 <style nonce="${nonce}">${CSS}</style></head>
 <body>
-<div id="bar"><span id="title">Claude Code Workflow Dashboard</span><span id="meta" class="dim"></span><span class="grow"></span><div role="group" aria-label="Show panels" id="toggles"></div><button id="selectRunBtn" title="Select or pin a workflow run" aria-label="Select workflow run"><span aria-hidden="true">&#9904;</span> Runs</button><button id="exportBtn" title="Export run as Markdown" aria-label="Export run as Markdown" data-testid="export-btn"><span aria-hidden="true">&#8595;</span> Export</button><button id="guideBtn" title="Open the workflow authoring guide" aria-label="Open workflow authoring guide"><span aria-hidden="true">&#128214;</span> Guide</button><button id="refreshBtn" title="Refresh now" aria-label="Refresh">Refresh</button></div>
+<div id="bar"><span id="title">Claude Code Workflow Dashboard</span><span id="meta" class="dim"></span><span class="grow"></span><button id="selectRunBtn" title="Select or pin a workflow run" aria-label="Select workflow run"><span aria-hidden="true">&#9904;</span> Runs</button><button id="exportBtn" title="Export run as Markdown" aria-label="Export run as Markdown" data-testid="export-btn"><span aria-hidden="true">&#8595;</span> Export</button><button id="guideBtn" title="Open the workflow authoring guide" aria-label="Open workflow authoring guide"><span aria-hidden="true">&#128214;</span> Guide</button><button id="refreshBtn" title="Refresh now" aria-label="Refresh">Refresh</button></div>
 <span id="sr-status" class="sr-only" aria-live="polite" aria-atomic="true"></span><div id="root"><div class="dim pad">Looking for an active workflow run…</div></div>
 <script nonce="${nonce}">const CHANGED_MAX_MIN=${changedMaxMin};const MAX_AGENTS=${maxAgents};const STALE_SECS=${staleSecs};const STALE_LABEL=${JSON.stringify(staleLabel)};const STALE_TOOLTIP=${JSON.stringify(staleTooltip)};${JS}</script>
 </body></html>`;

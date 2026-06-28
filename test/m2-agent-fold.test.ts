@@ -12,16 +12,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { getHtml } from '../src/webview/html';
-
-const TEST_NONCE = 'dGVzdG5vbmNlMTIz';
-
-function getPanelJs(html: string): string {
-  const scriptOpen = `<script nonce="${TEST_NONCE}">`;
-  const scriptClose = '</script>';
-  const s = html.indexOf(scriptOpen);
-  const e = html.lastIndexOf(scriptClose);
-  return html.slice(s + scriptOpen.length, e);
-}
+import { getPanelJs, TEST_NONCE } from './helpers/webview';
 
 // ---------------------------------------------------------------------------
 // CSS: chevron rule exists and uses theme-native variables

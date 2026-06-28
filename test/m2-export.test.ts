@@ -16,9 +16,11 @@
  *   - No hardcoded pricing anywhere in output
  *   - Round-trip safety: no unmatched | in table rows
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { generateMarkdown, buildExportFilename, fmtTok, fmtElapsed, cmpSev } from '../src/export/markdown';
 import type { SnapshotOk } from '../src/data/snapshot';
+import { getPanelJs, extractBalancedFn } from './helpers/webview';
+import { getHtml } from '../src/webview/html';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -120,6 +122,7 @@ function makeSnap(overrides: Partial<SnapshotOk> = {}): SnapshotOk {
     verdicts: { code_reviewer: 'FAIL — 3 findings' },
     verdictLabels: { code_reviewer: 'Code review' },
     changed: null,
+    changedByAgents: [],
   };
   return { ...base, ...overrides };
 }
@@ -170,6 +173,42 @@ describe('fmtTok — number formatting', () => {
 
   it('returns "0" for Infinity', () => {
     expect(fmtTok(Infinity)).toBe('0');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fmtTok TS/JS parity — webview JS and markdown.ts must produce identical output.
+// The webview version lives inside a template string (cannot import from src/);
+// this test extracts it via the same extractBalancedFn mechanism used by other
+// test files and compares it against the exported TS version for a reference
+// set of values that covers all three branches (<1k, <1M, >=1M) plus guards.
+// If either version diverges (e.g. threshold change), this test will catch it.
+// ---------------------------------------------------------------------------
+describe('fmtTok — TS/JS parity (markdown.ts vs webview js-panels.ts)', () => {
+  let jsVersion: (n: number) => string;
+
+  beforeAll(() => {
+    const js = getPanelJs(getHtml('dGVzdG5vbmNlMTIz'));
+    // Build a minimal harness: safeN is a dependency of fmtTok in the webview version.
+    const safeNFn = extractBalancedFn(js, 'safeN');
+    const fmtTokFn = extractBalancedFn(js, 'fmtTok');
+    const code = `${safeNFn}\n${fmtTokFn}\nreturn fmtTok;`;
+    jsVersion = new Function(code)() as (n: number) => string;
+  });
+
+  const REFERENCE_VALUES = [0, 1, 500, 999, 1000, 1500, 10000, 999999, 1_000_000, 2_500_000];
+  for (const v of REFERENCE_VALUES) {
+    it(`fmtTok(${v}) is identical in TS and JS`, () => {
+      expect(jsVersion(v)).toBe(fmtTok(v));
+    });
+  }
+
+  it('fmtTok(NaN) is identical in TS and JS', () => {
+    expect(jsVersion(NaN)).toBe(fmtTok(NaN));
+  });
+
+  it('fmtTok(Infinity) is identical in TS and JS', () => {
+    expect(jsVersion(Infinity)).toBe(fmtTok(Infinity));
   });
 });
 
@@ -719,6 +758,7 @@ describe('generateMarkdown — general', () => {
       verdicts: {},
       verdictLabels: {},
       changed: null,
+      changedByAgents: [],
     };
     expect(() => generateMarkdown(minimal)).not.toThrow();
     expect(generateMarkdown(minimal).length).toBeGreaterThan(0);
@@ -888,6 +928,34 @@ describe('generateMarkdown — changed files', () => {
 
   it('does NOT contain "## Changed Files" when snap.changed is empty', () => {
     const snap = makeSnap({ changed: [] });
+    const md = generateMarkdown(snap);
+    expect(md).not.toContain('## Changed Files');
+  });
+
+  // Spec v3 correction #7: changedByAgents must appear in the Markdown export.
+  it('contains agent-reported files section when changedByAgents is populated', () => {
+    const snap = makeSnap({ changedByAgents: ['src/a.ts', 'src/b.ts'], changed: null });
+    const md = generateMarkdown(snap);
+    expect(md).toContain('## Changed Files');
+    expect(md).toContain('Files reported by agents');
+    expect(md).toContain('`src/a.ts`');
+    expect(md).toContain('`src/b.ts`');
+  });
+
+  it('contains both agent-reported and recently-touched sections when both are present', () => {
+    const snap = makeSnap({
+      changedByAgents: ['src/a.ts'],
+      changed: ['src/b.ts'],
+    });
+    const md = generateMarkdown(snap);
+    expect(md).toContain('Files reported by agents');
+    expect(md).toContain('Recently touched');
+    expect(md).toContain('`src/a.ts`');
+    expect(md).toContain('`src/b.ts`');
+  });
+
+  it('does NOT contain "## Changed Files" when both changedByAgents and changed are empty', () => {
+    const snap = makeSnap({ changedByAgents: [], changed: [] });
     const md = generateMarkdown(snap);
     expect(md).not.toContain('## Changed Files');
   });

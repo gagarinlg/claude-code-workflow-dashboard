@@ -35,20 +35,7 @@ import { DEFAULT_ROLE_RULES } from '../src/data/parse';
 // ESM import so V8 coverage attributes all markdown.ts execution to a single module context.
 // Previously a require() created a second V8 script for the same file, splitting coverage.
 import { buildExportFilename as buildExportFilenameEsm } from '../src/export/markdown';
-
-const TEST_NONCE = 'dGVzdG5vbmNlMTIz';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function getPanelJs(html: string): string {
-  const open = `<script nonce="${TEST_NONCE}">`;
-  const close = '</script>';
-  const s = html.indexOf(open);
-  const e = html.lastIndexOf(close);
-  return html.slice(s + open.length, e);
-}
+import { getPanelJs, TEST_NONCE } from './helpers/webview';
 
 function getSidebarHtml(): string {
   return getHtml(TEST_NONCE, 2, 200, 'sidebar');
@@ -254,6 +241,7 @@ function makeMinimalSnap(overrides: Partial<SnapshotOk> = {}): SnapshotOk {
     verdicts: {},
     verdictLabels: {},
     changed: null,
+    changedByAgents: [],
     ...overrides,
   };
 }

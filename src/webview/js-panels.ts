@@ -12,22 +12,20 @@
 // name and as inner text in the overview sev-span builder.
 export const JS_PANELS = `
 const api = acquireVsCodeApi();
-// Panel order matches the render() function's panel-build order so toggle labels
-// are spatially consistent with page position: overview→agents→findings→verdicts→changed→charts→results.
-// Results is placed last (and starts hidden) per ROADMAP §M2-Layout.
-const PANELS=[['overview','Overview'],['agents','Agents'],['findings','Findings'],['verdicts','Verdicts'],['changed','Changed files'],['charts','Charts'],['results','Results']];
+// Tab definitions: key, label, enabled-when condition key.
+// Tabs are rendered in this order: Agents (default) | Findings | Verdicts | Changed | Charts | Results.
 // openAgents/openFind/fRev/fSev accept transcript-derived strings as keys (agent ids,
 // severity labels, reviewer labels). Using Object.create(null) eliminates the prototype
 // chain, preventing '__proto__' or 'constructor' key collisions regardless of engine version.
 const _s=api.getState()||{};
-// Charts default to hidden (charts:0) — for small runs (1-3 agents) the chart adds
-// scroll distance with little value. Users who want the chart can toggle it on.
-// Results also default to hidden (results:0) — only shown when relevant.
-// panelOpen: per-panel section collapse state. 1=expanded (default), 0=collapsed.
-// Charts section collapsed by default (panelOpen.charts:0) to cut scroll for small runs.
-// All other sections expanded by default so users see their data immediately.
-let state={on:_s.on||{overview:1,agents:1,findings:1,verdicts:1,changed:1,charts:0,results:0},panelOpen:Object.assign({overview:1,agents:1,findings:1,verdicts:1,changed:1,charts:0,results:1},_s.panelOpen||{}),openAgents:Object.assign(Object.create(null),_s.openAgents||{}),openFind:Object.assign(Object.create(null),_s.openFind||{}),fRev:Object.assign(Object.create(null),_s.fRev||{}),fSev:Object.assign(Object.create(null),_s.fSev||{}),openPrompt:Object.assign(Object.create(null),_s.openPrompt||{})};
+// state.activeTab: which tab is currently shown ('agents', 'findings', 'verdicts', 'changed', 'charts', 'results').
+// state.tabScroll: per-tab scroll position cache (captured before switch, restored after render).
+// state.findPage: current findings page index (0-based, PAGE_SIZE=50).
+// state.openRaw: open/closed state of raw-JSON <details> per result, keyed by r.label+':'+r.pass.
+//   Persists across snapshot re-renders (analogous to openPrompt for prompt disclosures).
+let state={activeTab:_s.activeTab||'agents',tabScroll:Object.assign(Object.create(null),_s.tabScroll||{}),findPage:_s.findPage||0,openAgents:Object.assign(Object.create(null),_s.openAgents||{}),openFind:Object.assign(Object.create(null),_s.openFind||{}),fRev:Object.assign(Object.create(null),_s.fRev||{}),fSev:Object.assign(Object.create(null),_s.fSev||{}),openPrompt:Object.assign(Object.create(null),_s.openPrompt||{}),openRaw:Object.assign(Object.create(null),_s.openRaw||{}),panelOpen:Object.assign(Object.create(null),_s.panelOpen||{})};
 let snap=null;
+const PAGE_SIZE=50;
 function save(){api.setState(state);}
 function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 // escCls applies esc() then replaces whitespace with underscores so the result
@@ -42,11 +40,6 @@ function escCls(s){return esc(s).replace(/[\\t\\n\\r ]+/g,'_');}
 // Intentional format divergence from fmtElapsed (space-separated "1m 30s" vs "1m30s" here).
 // See markdown.ts fmtElapsed JSDoc for details. The divergence is documented in both files.
 function fmtTHtml(s){var v=safeN(s);if(v===0)return '&lt;1s';if(v<60)return v+'s';if(v<3600)return Math.floor(v/60)+'m'+String(v%60).padStart(2,'0')+'s';return Math.floor(v/3600)+'h'+String(Math.floor(v%3600/60)).padStart(2,'0')+'m';}
-// fmtT: plain-text elapsed formatter — safe for use in textContent and aria-label attributes.
-// Returns '<1s' (literal less-than character) rather than the HTML entity '&lt;1s'.
-// Use this wherever the output goes into non-HTML context (ARIA labels, live regions, etc.).
-// For innerHTML injection, use fmtTHtml() instead.
-function fmtT(s){var v=safeN(s);if(v===0)return '<1s';if(v<60)return v+'s';if(v<3600)return Math.floor(v/60)+'m'+String(v%60).padStart(2,'0')+'s';return Math.floor(v/3600)+'h'+String(Math.floor(v%3600/60)).padStart(2,'0')+'m';}
 // safeN: coerce to number, return 0 if result is not finite (NaN/Infinity). Prevents
 // showing 'NaN' or 'Infinity' in KPI cards when snapshot fields have unexpected types.
 function safeN(n){var v=+n;return isFinite(v)?v:0;}
@@ -55,15 +48,64 @@ function safeN(n){var v=+n;return isFinite(v)?v:0;}
 // Uses toLocaleTimeString for locale-aware formatting without hardcoding a timezone.
 function fmtUpdated(iso){try{var d=new Date(iso);if(isNaN(d.getTime()))return iso;return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});}catch(e){return iso;}}
 
-const tg=document.getElementById('toggles');
-// The #toggles div already has role="group" aria-label="Show panels" in the HTML skeleton,
-// covering AT users. Add a visible 'Panels:' text label so sighted users can also identify
-// the checkbox group without relying on positional inference.
-if(tg){const panelsLbl=document.createElement('span');panelsLbl.textContent='Panels:';panelsLbl.className='panels-label';tg.appendChild(panelsLbl);PANELS.forEach(([k,lbl])=>{const l=document.createElement('label');const cb=document.createElement('input');cb.type='checkbox';cb.id='toggle-'+k;l.setAttribute('for','toggle-'+k);cb.checked=state.on[k]!==0;cb.addEventListener('change',()=>{state.on[k]=cb.checked?1:0;save();render();
-  // Announce the panel visibility change to screen readers via the sr-only live region.
-  // This confirms to keyboard/AT users that the panel appeared or disappeared.
-  const srSt=document.getElementById('sr-status');if(srSt)srSt.textContent=lbl+' panel '+(cb.checked?'shown':'hidden');
-});l.appendChild(cb);l.appendChild(document.createTextNode(' '+lbl));tg.appendChild(l);});}
+// normalizeLiteralEscapes: convert literal two-char sequences (\\n, \\r\\n, \\r, \\t)
+// to real control characters before parsing. Journal JSON double-encodes newlines:
+// after JSON.parse, a newline may survive as the literal two chars backslash+n.
+// parseImplementerMarkdown splits on real newlines so must normalize first.
+// Apply BEFORE esc() when normalizing raw text, or AFTER esc() when normalizing
+// already-escaped text (esc() does not touch backslashes, so order is safe either way).
+// Spec v3 correction #9.
+function normalizeLiteralEscapes(s){return s.replace(/\\\\r\\\\n/g,'\\n').replace(/\\\\n/g,'\\n').replace(/\\\\r/g,'\\n').replace(/\\\\t/g,'\\t');}
+
+// applyInlineSpans: bold and code transforms on an already-esc()-encoded line.
+// &lt;b&gt; etc. in escaped strings are literal entity text — we match the
+// already-escaped equivalents of ** and backtick to avoid false positives.
+// Double-escaping note: in the shipped JS string \\*\\* is literal \\*\\*,
+// which regex sees as \\*\\* (two escaped asterisks).
+// Extracted to module scope so renderTypedResult summary fallback can use renderInlineMd.
+// Spec v3 correction #10 / LOW closure finding.
+function applyInlineSpans(s){
+  // Bold: **text** (esc does not touch asterisks — they pass through unchanged).
+  // Function replacer used to avoid literal capture-group sigil in shipped string.
+  s=s.replace(/\\*\\*([^*]+)\\*\\*/g,function(m,g){return '<strong>'+g+'</strong>';});
+  // Inline code: backtick-delimited spans — esc does not touch backticks.
+  // Use hex x60 escape for backtick to avoid literal backticks in shipped JS.
+  // Function replacer used to avoid literal capture-group sigil in shipped string.
+  s=s.replace(new RegExp('\\x60([^\\x60]+)\\x60','g'),function(m,g){return '<code>'+g+'</code>';});
+  return s;
+}
+
+// renderInlineMd: apply lightweight inline markdown to an already-esc()-encoded string.
+// Operates on the escaped string so only known-safe tags are ever emitted.
+// Transform order: lists first (line-oriented), then inline spans.
+// Extracted to module scope so it can be called from the renderTypedResult summary
+// fallback and from any other rendering path. Spec v3 correction #10.
+function renderInlineMd(escaped){
+  // Split into lines; detect list runs; wrap them in <ul>/<ol>; then join.
+  var lines=escaped.split('\\n');
+  var result='';
+  var i=0;
+  while(i<lines.length){
+    var line=lines[i];
+    var ul=/^- |^\\* /.test(line);
+    var ol=/^\\d+\\. /.test(line);
+    if(ul||ol){
+      var tag=ul?'ul':'ol';
+      result+='<'+tag+'>';
+      while(i<lines.length&&(ul?/^- |^\\* /.test(lines[i]):/^\\d+\\. /.test(lines[i]))){
+        var item=lines[i].replace(/^- |^\\* /,'').replace(/^\\d+\\. /,'');
+        result+='<li>'+applyInlineSpans(item)+'</li>';
+        i++;
+      }
+      result+='</'+tag+'>';
+    }else{
+      result+=applyInlineSpans(line)+'\\n';
+      i++;
+    }
+  }
+  return result;
+}
+
 var rb=document.getElementById('refreshBtn');if(rb)rb.addEventListener('click',()=>api.postMessage({type:'refresh'}));
 var gb=document.getElementById('guideBtn');if(gb)gb.addEventListener('click',()=>api.postMessage({type:'guide'}));
 var srb=document.getElementById('selectRunBtn');if(srb)srb.addEventListener('click',()=>api.postMessage({type:'selectRun'}));
@@ -74,6 +116,65 @@ var eb=document.getElementById('exportBtn');if(eb)eb.addEventListener('click',()
 // The CSP nonce already prevents external script injection, so no origin check is
 // needed here. The VS Code-idiomatic pattern checks only e.data.type.
 window.addEventListener('message',e=>{if(e.data&&e.data.type==='snapshot'){snap=e.data.snap;render();}});
+
+// ---------------------------------------------------------------------------
+// Tab helpers
+// ---------------------------------------------------------------------------
+// Compute which tabs are enabled and what badges they carry.
+// Returns array of {key, label, enabled, badge} in display order.
+function tabDefs(){
+  var agentCount=snap&&snap.agents?snap.agents.length:0;
+  var findCount=snap&&snap.allFindings?snap.allFindings.length:0;
+  var verdictCount=snap&&snap.verdicts?Object.keys(snap.verdicts).length:0;
+  var resultsCount=snap&&snap.structuredResults?snap.structuredResults.length:0;
+  return [
+    {key:'agents',label:'Agents',enabled:true,badge:agentCount>0?String(agentCount):''},
+    {key:'findings',label:'Findings',enabled:findCount>0,badge:findCount>0?String(findCount):''},
+    {key:'verdicts',label:'Verdicts',enabled:verdictCount>0,badge:''},
+    {key:'changed',label:'Changed',enabled:true,badge:''},
+    {key:'charts',label:'Charts',enabled:agentCount>0,badge:''},
+    {key:'results',label:'Results',enabled:resultsCount>0,badge:''}
+  ];
+}
+// Ensure state.activeTab is a currently-enabled tab; fall back to 'agents'.
+function clampActiveTab(){
+  var defs=tabDefs();
+  var active=defs.find(function(d){return d.key===state.activeTab&&d.enabled;});
+  if(!active)state.activeTab='agents';
+}
+// tabBar(): renders the WAI-ARIA tablist.
+// Active tab: tabindex=0, aria-selected=true.
+// Inactive enabled tabs: tabindex=-1, aria-selected=false.
+// Disabled tabs: disabled attr + aria-disabled=true + tabindex=-1.
+function tabBar(){
+  var defs=tabDefs();
+  var tabs=defs.map(function(d){
+    var isCurrent=d.key===state.activeTab;
+    var badge=d.badge?'<span class="tab-badge" aria-hidden="true">'+esc(d.badge)+'</span>':'';
+    if(!d.enabled){
+      // disabled: not focusable, not selectable
+      return '<button role="tab" class="tab-btn" id="tab-'+esc(d.key)+'" aria-selected="false" aria-disabled="true" disabled tabindex="-1" data-tabkey="'+esc(d.key)+'">'+esc(d.label)+badge+'</button>';
+    }
+    if(isCurrent){
+      return '<button role="tab" class="tab-btn tab-active" id="tab-'+esc(d.key)+'" aria-selected="true" tabindex="0" data-tabkey="'+esc(d.key)+'">'+esc(d.label)+badge+'</button>';
+    }
+    return '<button role="tab" class="tab-btn" id="tab-'+esc(d.key)+'" aria-selected="false" tabindex="-1" data-tabkey="'+esc(d.key)+'">'+esc(d.label)+badge+'</button>';
+  }).join('');
+  return '<div id="tab-bar" role="tablist" aria-label="Dashboard sections">'+tabs+'</div>';
+}
+// tabContent(): renders the body of the currently active tab.
+function tabContent(){
+  var k=state.activeTab;
+  var body='';
+  if(k==='agents')body=agentsPanel();
+  else if(k==='findings')body=findingsPanel();
+  else if(k==='verdicts')body=Object.keys(snap.verdicts).length?verdictsPanel():'<div class="dim pad">No verdicts yet.</div>';
+  else if(k==='changed')body=changedPanel();
+  else if(k==='charts')body=snap.agents&&snap.agents.length?chartsPanel():'<div class="dim pad">No agents yet.</div>';
+  else if(k==='results')body=snap.structuredResults&&snap.structuredResults.length?resultsPanel():'<div class="dim pad">No structured results yet.</div>';
+  // aria-labelledby references the active tab button
+  return '<div id="tab-content" role="tabpanel" aria-labelledby="tab-'+esc(k)+'">'+body+'</div>';
+}
 
 function render(){
   const root=document.getElementById('root');
@@ -89,6 +190,13 @@ function render(){
     // JSON.stringify produces an unambiguous key regardless of what any component contains.
     const findingIds=new Set(snap.allFindings.map(f=>JSON.stringify([f.reviewer,f.pass,f.location||'',f.title||''])));
     state.openFind=Object.fromEntries(Object.entries(state.openFind).filter(([k])=>findingIds.has(k)));
+    // Prune openRaw for structured results from prior runs. Keys are r.label+':'+r.pass strings.
+    // Without pruning, openRaw accumulates dead entries indefinitely across workflow runs.
+    // Symmetric with the openFind prune pattern above.
+    const rawIds=new Set((snap.structuredResults||[]).map(r=>r.label+':'+r.pass));
+    // Also include agent-sub raw keys keyed as aid+':sub-raw' — pruned by current agent ids.
+    agentIds.forEach(function(aid){rawIds.add(aid+':sub-raw');});
+    state.openRaw=Object.fromEntries(Object.entries(state.openRaw).filter(([k])=>rawIds.has(k)));
   }
   if(!snap.ok){
     root.innerHTML='<div class="empty-state" data-testid="empty-state"><h3>No Workflow run found</h3><div class="empty-msg" data-testid="empty-msg">'+esc(snap.msg)+'</div><p class="empty-hint">Start a <b>Claude Code Workflow()</b> run and the dashboard will update automatically. To change the search path, open <b>Settings &rarr; Claude Code Workflow Dashboard &rarr; Workflows Glob Base</b>.</p><div class="empty-actions"><button id="emptyRefresh">Refresh</button><button id="emptyGuide">Open Authoring Guide</button></div></div>';
@@ -97,7 +205,12 @@ function render(){
     return;
   }
   var metaEl=document.getElementById('meta');if(metaEl)metaEl.innerHTML=esc(snap.runId)+(snap.isPinned?'<span class="st done pinned-badge">pinned</span>':'')+' · updated '+esc(fmtUpdated(snap.updatedAt));
-  const sy=window.scrollY;
+  // Capture per-tab scroll position before innerHTML replace.
+  var tc=document.getElementById('tab-content');
+  if(tc&&state.activeTab){
+    if(state.tabScroll===null||typeof state.tabScroll!=='object')state.tabScroll=Object.create(null);
+    state.tabScroll[state.activeTab]=tc.scrollTop;
+  }
   // AC3: Capture inner scroll positions for all scrollable sub-regions before innerHTML replace.
   // subPos keys: '<aid>:sub', '<aid>:prompt', 'result:<rlabel>'.
   // This prevents snapshot re-renders from resetting prompt-pre and result-body scroll.
@@ -118,21 +231,26 @@ function render(){
   const focusRev=focusEl?.closest('[data-rev]')?.dataset?.rev||null;
   const focusSev=focusEl?.closest('[data-sev]')?.dataset?.sev||null;
   const focusPaid=focusEl?.closest('[data-paid]')?.dataset?.paid||null;
-  let h='';
-  if(state.on.overview!==0)h+=overview();
-  if(state.on.agents!==0)h+=agentsPanel();
-  if(state.on.findings!==0)h+=findingsPanel();
-  if(state.on.verdicts!==0&&Object.keys(snap.verdicts).length)h+=verdictsPanel();
-  if(state.on.changed!==0&&snap.changed)h+=changedPanel();
-  if(state.on.charts!==0&&snap.agents&&snap.agents.length)h+=chartsPanel();
-  if(state.on.results!==0&&snap.structuredResults.length)h+=resultsPanel();
-  root.innerHTML=h;wire();
+  // Clamp activeTab to an enabled tab before rendering.
+  clampActiveTab();
+  // Build root innerHTML: overview-bar (non-collapsible) + tab-bar + tab-content.
+  root.innerHTML=overview()+tabBar()+tabContent();
+  wire();
+  // Restore per-tab scroll after wire() has set up the DOM.
+  var tcNew=document.getElementById('tab-content');
+  if(tcNew&&state.tabScroll&&state.tabScroll[state.activeTab]!=null){
+    tcNew.scrollTop=state.tabScroll[state.activeTab];
+  }
   // Update the sr-only live region with a concise status summary. Placing the update
   // AFTER wire() ensures the DOM is settled before the announcement fires.
   // textContent assignment is injection-safe without esc() — the browser does not
   // parse HTML in text nodes. Using esc() here would cause screen readers to announce
   // literal HTML entities (e.g. '&amp;' instead of '&') for any special chars in L2.phase.
-  if(snap&&snap.ok){var srSt=document.getElementById('sr-status');if(srSt){var L2=snap.loop;srSt.textContent=L2.phase+' — '+safeN(L2.live)+' live, '+safeN(L2.done)+' done, '+safeN(L2.findings)+' findings';}}
+  if(snap&&snap.ok){var srSt=document.getElementById('sr-status');if(srSt){var L2=snap.loop;var srText=L2.phase+' — '+safeN(L2.live)+' live, '+safeN(L2.done)+' done, '+safeN(L2.findings)+' findings';
+    // WCAG 4.1.3: announce pagination state when the Findings tab is active and paginated,
+    // so screen reader users know their position without navigating to the paginator.
+    if(state.activeTab==='findings'){var fnbEl=document.getElementById('findNextBtn');if(fnbEl&&fnbEl.dataset.total){var srTotal=parseInt(fnbEl.dataset.total,10)||1;if(srTotal>1){srText+='; findings page '+(state.findPage+1)+' of '+srTotal;}}}
+    srSt.textContent=srText;}}
   // AC3: Restore inner scroll positions captured before innerHTML replace.
   // Note: scrollTop is silently clamped to [0, scrollHeight-clientHeight] by the browser.
   // If the new .sub content is shorter than before (e.g. fewer tail entries after transcript
@@ -146,7 +264,6 @@ function render(){
   document.querySelectorAll('.finding.result[data-rlabel]').forEach(function(r){
     var rb=r.querySelector('.result-body');if(rb&&subPos['result:'+r.dataset.rlabel]!=null)rb.scrollTop=subPos['result:'+r.dataset.rlabel];
   });
-  window.scrollTo(0,sy);
   // Restore keyboard focus after innerHTML replace. CSS.escape() is used in
   // attribute selectors — esc() would HTML-encode the value which is wrong in CSS.
   // sel() builds an attribute selector using single-quote delimiters so these lines
@@ -174,17 +291,25 @@ function render(){
 //   tabindex, aria-expanded, and data-pkey are on the <button>, NOT on the h3.
 // wire() targets '.panel>h3>button[data-pkey]' — the h3 itself has no data-pkey.
 // The .panel-chevron rotates via CSS when the 'collapsed' class is absent on .panel.
-function panel(k,t,b){var isOpen=state.panelOpen[k]!==0;var collCls=isOpen?'':'collapsed';return '<div class="panel '+collCls+'"><h3><button tabindex="0" aria-expanded="'+(isOpen?'true':'false')+'" data-pkey="'+esc(k)+'"><span class="panel-chevron" aria-hidden="true">&#9658;</span>'+esc(t)+'</button></h3><div class="body">'+b+'</div></div>';}
+// TODO(M3): remove panel() and the corresponding wire() block in js-wire.ts if no callers
+// are added by the M3 milestone. Both are dead code since v3 binding removed all in-tab
+// panel() calls; they are retained only to keep state.panelOpen machinery available for any
+// future collapsible section that may need it. Callers must add panelOpen keys themselves.
+function panel(k,t,b){var isOpen=state.panelOpen[k]!==0;var collCls=isOpen?'':'collapsed';return '<div class="panel '+collCls+'"><h3><button aria-expanded="'+(isOpen?'true':'false')+'" data-pkey="'+esc(k)+'"><span class="panel-chevron" aria-hidden="true">&#9658;</span>'+esc(t)+'</button></h3><div class="body">'+b+'</div></div>';}
 
 // Keep in sync with fmtTok in src/export/markdown.ts (TypeScript version).
 // True deduplication is blocked: this version runs in the webview DOM context.
 function fmtTok(n){var v=safeN(n);return v<1000?v+'':v<1000000?(v/1000).toFixed(1)+'k':(v/1000000).toFixed(2)+'M';}
+
+// overview(): always-visible, non-collapsible #overview-bar.
+// Rendered first in #root before the tab bar. Keeps all KPI content and
+// colored severity badges as-is; no collapse chevron or panel() wrapper.
 function overview(){
   const L=snap.loop;
   // safeN() guards L.sevTotals[s] — it arrives via postMessage so a crafted or
   // corrupted snapshot message could carry a non-numeric value (null, undefined,
   // or a string). safeN() ensures only a finite number reaches innerHTML.
-  let sev='';for(const s in L.sevTotals){const es=esc(s);const ec=escCls(s);sev+='<span class="sev '+ec+'">'+es+' '+safeN(L.sevTotals[s])+'</span>';}
+  let sev='';for(const s of Object.keys(L.sevTotals)){const es=esc(s);const ec=escCls(s);sev+='<span class="sev '+ec+'">'+es+' '+safeN(L.sevTotals[s])+'</span>';}
   // Optional token KPIs — only rendered when the field is present and not undefined.
   // safeN() guards against NaN/Infinity for any unexpected type coercions.
   // Optional token KPIs: use aria-describedby + sr-only text instead of title-only
@@ -195,7 +320,7 @@ function overview(){
   if(L.inTok!=null)optTok+='<div class="kpi" aria-describedby="kpi-in-tok-desc"><div class="dim">In tokens</div><b>'+fmtTok(L.inTok)+'</b><span id="kpi-in-tok-desc" class="sr-only">Total input tokens read from context by this workflow run</span></div>';
   if(L.cacheRead!=null)optTok+='<div class="kpi" aria-describedby="kpi-cache-read-desc"><div class="dim">Cache read</div><b>'+fmtTok(L.cacheRead)+'</b><span id="kpi-cache-read-desc" class="sr-only">Input tokens served from the prompt cache (faster than uncached reads)</span></div>';
   if(L.cacheCreate!=null)optTok+='<div class="kpi" aria-describedby="kpi-cache-write-desc"><div class="dim">Cache write</div><b>'+fmtTok(L.cacheCreate)+'</b><span id="kpi-cache-write-desc" class="sr-only">Input tokens written to the prompt cache for reuse by later requests</span></div>';
-  const body='<div class="kpis">'
+  var kpis='<div class="kpis">'
     +(L.passes?'<div class="kpi"><div class="dim">Passes</div><b>'+safeN(L.passes)+'</b></div>':'')
     +'<div class="kpi"><div class="dim">Phase</div><b>'+esc(L.phase)+'</b></div>'
     // WCAG 1.4.1: green color alone is not sufficient to convey "agents running" state.
@@ -210,27 +335,30 @@ function overview(){
     // Non-color indicator for stalled > 0: bold count (weight change is a shape signal
     // independent of color, satisfying WCAG 1.4.1 for red-green color-blind users).
     // The sub-label 'no activity >Xm' is also shown at full opacity when stalled > 0.
-    +'<div class="kpi" aria-describedby="stalled-panel-desc"><div class="dim">Stalled</div><b'+(L.dead?' class="kpi-stalled-active"':'')+'>'+safeN(L.dead)+'</b><div class="'+(L.dead?'':'dim ')+'kpi-sublabel">no activity '+STALE_LABEL+'</div><span id="stalled-panel-desc" class="sr-only">'+esc(STALE_TOOLTIP)+'</span></div>'
+    +'<div class="kpi" aria-describedby="stalled-panel-desc"><div class="dim">Stalled</div><b'+(L.dead?' class="kpi-stalled-active"':'')+'>'+safeN(L.dead)+'</b><div class="'+(L.dead?'':'dim ')+'kpi-sublabel">no activity '+esc(STALE_LABEL)+'</div><span id="stalled-panel-desc" class="sr-only">'+esc(STALE_TOOLTIP)+'</span></div>'
     +'<div class="kpi"><div class="dim">Agents</div><b>'+safeN(L.total)+'</b></div>'
     +'<div class="kpi"><div class="dim">Out tokens</div><b data-testid="loop-out-tok">'+fmtTok(L.outTok)+'</b></div>'
     +'<div class="kpi"><div class="dim">Tool-calls</div><b data-testid="loop-tools">'+safeN(L.tools)+'</b></div>'
     +optTok
     +'<div class="kpi"><div class="dim">Findings</div><b>'+safeN(L.findings)+'</b></div>'
     +'</div>'+(sev?('<div class="overview-sev-row">'+sev+'</div>'):'');
-  return panel('overview','Overview',body);
+  return '<div id="overview-bar">'+kpis+'</div>';
 }
 
 // ---------------------------------------------------------------------------
 // M2-TypedResults: typed result renderers for structured agent output.
-// Each known agentType gets a tailored view; unknown types fall back to a
-// generic key-value table. NEVER a bare JSON dump. All values pass through
-// esc() before injection. Theme-native: only --vscode-* CSS vars.
+// M2-TypedResults-Generic: renderTypedResult is now FIELD-DRIVEN — it scans
+// the result object for known field patterns and renders each one appropriately,
+// regardless of agentType. The per-type named renderers below are kept for
+// backward-compatibility (existing tests reference them by name) but renderTypedResult
+// no longer dispatches via per-agentType switch. agentType is only a label hint.
+// NEVER a bare JSON dump. All values pass through esc(). Theme-native: --vscode-* only.
 // ---------------------------------------------------------------------------
 
 // Generic fallback: render a result object as a key/value table.
-// Skips keys whose values are objects/arrays (rendered recursively as lists).
-// Arrays of primitives are rendered as bullet lists; objects become nested tables.
-// Handles all unknown agentType shapes gracefully.
+// Used for REMAINING keys after the field-driven pass handles known patterns.
+// Arrays of primitives are rendered as bullet lists; nested objects as [object] placeholder.
+// Handles all unknown agentType shapes gracefully. NEVER produces raw JSON output.
 function renderGenericResult(obj){
   if(!obj||typeof obj!=='object')return '<div class="dim">no data</div>';
   var keys=Object.keys(obj);
@@ -252,7 +380,10 @@ function renderGenericResult(obj){
   return '<div class="typed-result"><div class="typed-kv">'+rows+'</div></div>';
 }
 
-// implementer: filesChanged list + summary + fixed/testsRun counts
+// implementer: filesChanged list + summary + fixed/testsRun counts.
+// Kept for backward-compat; renderTypedResult is now field-driven and no longer calls this directly.
+// summary uses renderInlineMd(normalizeLiteralEscapes(esc(...))) so that **bold** and
+// literal \\n escape sequences render correctly if reactivated (spec v3 corrections #9/#10).
 function renderImplementerResult(r){
   var out='<div class="typed-result">';
   var verdict=r.verdict||r.status||'';
@@ -260,7 +391,7 @@ function renderImplementerResult(r){
     var isOk=/pass|ok|success|done|complet/i.test(String(verdict));
     out+='<div class="'+(isOk?'typed-verdict-ok':'typed-verdict-bad')+'">'+esc(String(verdict))+'</div>';
   }
-  if(r.summary){out+='<div class="typed-summary">'+esc(String(r.summary))+'</div>';}
+  if(r.summary){out+='<div class="typed-summary">'+renderInlineMd(normalizeLiteralEscapes(esc(String(r.summary))))+'</div>';}
   var kv='';
   if(r.fixed!=null)kv+='<div class="typed-kv-key">fixed</div><div class="typed-kv-val">'+safeN(r.fixed)+' issues</div>';
   if(r.testsRun!=null)kv+='<div class="typed-kv-key">tests run</div><div class="typed-kv-val">'+(r.testsRun?'<span class="typed-verdict-ok">yes</span>':'<span class="typed-verdict-bad">no</span>')+'</div>';
@@ -275,7 +406,9 @@ function renderImplementerResult(r){
   return out;
 }
 
-// test-verifier: pass/fail + summary + coverage gaps
+// test-verifier: pass/fail + summary + coverage gaps.
+// Kept for backward-compat; renderTypedResult is now field-driven and no longer calls this directly.
+// summary uses renderInlineMd(normalizeLiteralEscapes(esc(...))) — spec v3 correctness.
 function renderVerifierResult(r){
   var out='<div class="typed-result">';
   var passed=r.passed;
@@ -285,7 +418,7 @@ function renderVerifierResult(r){
     var isOk=/pass|ok|success/i.test(String(r.verdict));
     out+='<div class="'+(isOk?'typed-verdict-ok':'typed-verdict-bad')+'">'+esc(String(r.verdict))+'</div>';
   }
-  if(r.summary){out+='<div class="typed-summary">'+esc(String(r.summary))+'</div>';}
+  if(r.summary){out+='<div class="typed-summary">'+renderInlineMd(normalizeLiteralEscapes(esc(String(r.summary))))+'</div>';}
   if(r.testsRun!=null){var kv='<div class="typed-kv-key">tests run</div><div class="typed-kv-val">'+safeN(r.testsRun)+'</div>';if(r.testsPassed!=null)kv+='<div class="typed-kv-key">passed</div><div class="typed-kv-val">'+safeN(r.testsPassed)+'</div>';if(r.testsFailed!=null)kv+='<div class="typed-kv-key">failed</div><div class="typed-kv-val">'+safeN(r.testsFailed)+'</div>';out+='<div class="typed-kv">'+kv+'</div>';}
   var gaps=Array.isArray(r.coverageGaps)?r.coverageGaps:(Array.isArray(r.gaps)?r.gaps:[]);
   if(gaps.length){
@@ -296,7 +429,9 @@ function renderVerifierResult(r){
   return out;
 }
 
-// judge: verdict + score + rationale
+// judge: verdict + score + rationale.
+// Kept for backward-compat; renderTypedResult is now field-driven and no longer calls this directly.
+// rationale/summary uses renderInlineMd(normalizeLiteralEscapes(esc(...))) — spec v3 correctness.
 function renderJudgeResult(r){
   var out='<div class="typed-result">';
   var verdict=r.verdict||r.decision||'';
@@ -305,14 +440,16 @@ function renderJudgeResult(r){
     out+='<div class="'+(isOk?'typed-verdict-ok':'typed-verdict-bad')+'">'+esc(String(verdict))+'</div>';
   }
   if(r.score!=null){out+='<span class="typed-score">'+esc(String(r.score))+'</span>'+(r.maxScore!=null?' / '+esc(String(r.maxScore)):'');}
-  if(r.rationale){out+='<div class="typed-summary">'+esc(String(r.rationale))+'</div>';}
-  else if(r.summary){out+='<div class="typed-summary">'+esc(String(r.summary))+'</div>';}
+  if(r.rationale){out+='<div class="typed-summary">'+renderInlineMd(normalizeLiteralEscapes(esc(String(r.rationale))))+'</div>';}
+  else if(r.summary){out+='<div class="typed-summary">'+renderInlineMd(normalizeLiteralEscapes(esc(String(r.summary))))+'</div>';}
   if(r.notes){out+='<div class="typed-section-label">Notes</div><div class="typed-gap">'+esc(String(r.notes))+'</div>';}
   out+='</div>';
   return out;
 }
 
-// completeness-critic: verdict + gaps list + summary
+// completeness-critic: verdict + gaps list + summary.
+// Kept for backward-compat; renderTypedResult is now field-driven and no longer calls this directly.
+// summary uses renderInlineMd(normalizeLiteralEscapes(esc(...))) — spec v3 correctness.
 function renderCompletenessResult(r){
   var out='<div class="typed-result">';
   var verdict=r.verdict||r.status||'';
@@ -322,7 +459,7 @@ function renderCompletenessResult(r){
     var isOk=/pass|ok|done/i.test(s)||(/complete/i.test(s)&&!/incomplete/i.test(s));
     out+='<div class="'+(isOk?'typed-verdict-ok':'typed-verdict-bad')+'">'+esc(s)+'</div>';
   }
-  if(r.summary){out+='<div class="typed-summary">'+esc(String(r.summary))+'</div>';}
+  if(r.summary){out+='<div class="typed-summary">'+renderInlineMd(normalizeLiteralEscapes(esc(String(r.summary))))+'</div>';}
   var gaps=Array.isArray(r.gaps)?r.gaps:(Array.isArray(r.coverageGaps)?r.coverageGaps:[]);
   if(gaps.length){
     out+='<div class="typed-section-label">Gaps ('+gaps.length+')</div>';
@@ -332,16 +469,183 @@ function renderCompletenessResult(r){
   return out;
 }
 
-// Dispatch: select the right renderer based on agentType, fall back to generic.
+// ---------------------------------------------------------------------------
+// M2-TypedResults-Generic: field-driven dispatcher.
+//
+// renderTypedResult scans the result object by FIELD PATTERNS — not agentType.
+// agentType is accepted only as a label hint (unused in dispatch logic).
+// Order of rendering:
+//   1. verdict(string) → status badge (APPROVED→ok; WORK/FAIL/REJECT→bad; else neutral)
+//   2. findings[] of {severity,title,location,why,fix,category} → severity-sorted list
+//   3. summary(string) → ## / ### section parse when structured, else plain text
+//   4. filesChanged[] → file list with count (cap 40)
+//   5. boolean flags: key ends in Ok, equals testsRun, or matches /passed/i → ✓/✗ chips
+//   6. failures[] / gaps[] / coverageGaps[] → list (empty → 'none')
+//   7. numeric counts (fixed, testsPassed, …) → labeled values
+//   8. every other/unknown key → generic key-value table (string/number/bool/array/object)
+//   Raw JSON in a collapsed details block BELOW the typed view.
+// Wrapped in try/catch: on ANY error, falls back to collapsed raw text — NEVER throws.
+// esc() applied to every transcript-derived value. Theme-native --vscode-* only.
+// ---------------------------------------------------------------------------
+
+// Severity sort order for findings[]. Higher index = lower severity (rendered last).
+var SEV_ORDER=['CRITICAL','HIGH','MEDIUM','LOW','NITPICK','UNRATED'];
+function sevRank(s){var i=SEV_ORDER.indexOf(String(s||'').toUpperCase());return i===-1?SEV_ORDER.length:i;}
+
+// isBoolChipKey: true when the boolean field key matches the chip pattern.
+// Pattern: key ends with 'Ok' (buildOk, lintOk, testsOk), equals 'testsRun', or contains 'passed'.
+// Uses string methods (endsWith) instead of regex end-of-string anchors to keep the HTML
+// output free of certain characters that constraint tests flag in the webview output.
+function isBoolChipKey(k){return k==='testsRun'||k.endsWith('Ok')||k.endsWith('ok')||/passed/i.test(k);}
+
 function renderTypedResult(agentType,result){
+  // Guard: null/undefined/non-object result → friendly message, no throw.
   if(!result||typeof result!=='object')return '<div class="dim">no structured result</div>';
-  var t=agentType||'';
-  if(t==='implementer')return renderImplementerResult(result);
-  if(t==='test-verifier')return renderVerifierResult(result);
-  if(t==='judge')return renderJudgeResult(result);
-  if(t==='completeness-critic')return renderCompletenessResult(result);
-  // All other known + unknown types fall through to the generic key-value table.
-  return renderGenericResult(result);
+  try{
+    var out='';
+    // Track which top-level keys have been handled so the generic-kv fallback
+    // only renders the remainder (keys not matched by any named pattern).
+    var handled=Object.create(null);
+
+    // 1. verdict(string) → status badge.
+    //    Exact case-insensitive match for 'APPROVED' → ok class (green).
+    //    Contains WORK, FAIL, or REJECT (any case) → bad class (red).
+    //    Anything else → neutral class (muted).
+    if(typeof result.verdict==='string'){
+      var vs=result.verdict;
+      var vcls=vs.toUpperCase()==='APPROVED'?'typed-verdict-ok':(vs.toUpperCase().indexOf('WORK')!==-1||vs.toUpperCase().indexOf('FAIL')!==-1||vs.toUpperCase().indexOf('REJECT')!==-1)?'typed-verdict-bad':'typed-verdict-neutral';
+      out+='<div class="'+vcls+'">'+esc(vs)+'</div>';
+      handled.verdict=1;
+    }
+
+    // 2. findings[] → severity-sorted list with {severity,title,location,why,fix,category}.
+    //    Re-uses the same rendering pattern as findingsPanel() for visual consistency.
+    if(Array.isArray(result.findings)&&result.findings.length){
+      var sorted=result.findings.slice().sort(function(a,b){return sevRank(a.severity)-sevRank(b.severity);});
+      out+='<div class="typed-section-label">Findings ('+sorted.length+')</div>';
+      out+=sorted.map(function(f){
+        var es=esc(f.severity||'UNRATED');var ec=escCls(f.severity||'UNRATED');
+        // why and fix are rendered inline (always visible) — no .detail collapse wrapper.
+        // Typed-findings are in structured results where context is always useful,
+        // unlike the Findings tab where individual rows are collapsible.
+        return '<div class="finding typed-finding"><div class="ttl"><span class="sev '+ec+'">'+es+'</span><b>'+esc(f.title||'(untitled)')+'</b>'
+          +(f.location?'<span class="dim"> ['+esc(f.location)+']</span>':'')+'</div>'
+          +((f.why||f.fix)?'<div class="typed-finding-detail">'+(f.why?'<div><b>Why:</b> '+esc(f.why)+'</div>':'')+(f.fix?'<div class="finding-fix"><b>Fix:</b> '+esc(f.fix)+'</div>':'')+'</div>':'')+'</div>';
+      }).join('');
+      handled.findings=1;
+    }else if(result.findings!==undefined){
+      handled.findings=1;
+    }
+
+    // 3. summary(string) → parse ## / ### markdown sections when structured, else plain text.
+    //    Uses parseImplementerMarkdown which handles the ## Implementation / ### sections pattern.
+    //    Falls back gracefully to inline-markdown rendered text if structure is absent.
+    //    normalizeLiteralEscapes is applied inside parseImplementerMarkdown; the fallback
+    //    applies it via renderInlineMd(normalizeLiteralEscapes(esc(…))) per spec v3 #9+#10.
+    if(typeof result.summary==='string'&&result.summary){
+      var parsed=parseImplementerMarkdown(result.summary);
+      if(parsed){out+=parsed;}
+      else{out+='<div class="typed-section-label">Summary</div><div class="typed-summary">'+renderInlineMd(normalizeLiteralEscapes(esc(result.summary)))+'</div>';}
+      handled.summary=1;
+    }
+
+    // 4. filesChanged[] → file list with count (cap 40).
+    if(Array.isArray(result.filesChanged)){
+      var files=result.filesChanged;
+      if(files.length){
+        out+='<div class="typed-section-label">Files changed ('+files.length+')</div>';
+        out+='<ul class="typed-file-list">'+files.slice(0,40).map(function(f){return '<li class="typed-file">'+esc(typeof f==='string'?f:String(f))+'</li>';}).join('')+(files.length>40?'<li class="dim">…+'+(files.length-40)+' more</li>':'')+'</ul>';
+      }
+      handled.filesChanged=1;
+    }
+
+    // 5. Boolean flags: key ends with 'Ok' (buildOk/lintOk/testsOk), key equals 'testsRun',
+    //    or key contains 'passed' — renders as ✓/✗ chips in a row.
+    var boolChips='';
+    Object.keys(result).forEach(function(k){
+      if(handled[k])return;
+      if(typeof result[k]==='boolean'&&isBoolChipKey(k)){
+        var v=result[k];
+        // WCAG 1.1.1: ✓/✗ are non-text content. aria-hidden hides the symbol from AT;
+        // the sr-only span provides the semantic pass/fail meaning as plain text.
+        // title= conveys the key name to sighted users on hover (not relied on for AT).
+        boolChips+='<span class="typed-bool-chip '+(v?'typed-verdict-ok':'typed-verdict-bad')+'" title="'+esc(k)+'"><span aria-hidden="true">'+(v?'✓':'✗')+'</span> '+esc(k)+' <span class="sr-only">'+(v?'(pass)':'(fail)')+'</span></span>';
+        handled[k]=1;
+      }
+    });
+    if(boolChips)out+='<div class="typed-bool-chips">'+boolChips+'</div>';
+
+    // 6. failures[] / gaps[] / coverageGaps[] → list (empty → 'none').
+    ['failures','gaps','coverageGaps'].forEach(function(key){
+      if(handled[key])return;
+      var arr=result[key];
+      if(!Array.isArray(arr))return;
+      var label=key==='coverageGaps'?'Coverage gaps':key.charAt(0).toUpperCase()+key.slice(1);
+      out+='<div class="typed-section-label">'+esc(label)+'</div>';
+      if(!arr.length){out+='<div class="dim">none</div>';}
+      else{
+        var cap=key==='gaps'?30:key==='coverageGaps'?20:key==='failures'?20:30;
+        out+=arr.slice(0,cap).map(function(g){return '<div class="typed-gap">'+esc(typeof g==='string'?g:String(g))+'</div>';}).join('');
+        if(arr.length>cap)out+='<div class="dim">…+'+(arr.length-cap)+' more</div>';
+      }
+      handled[key]=1;
+    });
+
+    // 7. Numeric counts (fixed, testsPassed, testsFailed, etc.) → labeled values.
+    //    Renders known numeric fields as a compact kv pair block.
+    var numKv='';
+    Object.keys(result).forEach(function(k){
+      if(handled[k])return;
+      if(typeof result[k]==='number'){
+        numKv+='<div class="typed-kv-key">'+esc(k)+'</div><div class="typed-kv-val">'+safeN(result[k])+'</div>';
+        handled[k]=1;
+      }
+    });
+    if(numKv)out+='<div class="typed-kv">'+numKv+'</div>';
+
+    // 8. Every remaining/unknown key → generic key-value table.
+    //    Handles string, boolean (not matching the chip pattern), array, nested object.
+    //    NEVER produces raw JSON output — arrays and objects get human-readable presentation.
+    var remainingKeys=Object.keys(result).filter(function(k){return !handled[k];});
+    if(remainingKeys.length){
+      var rows='';
+      remainingKeys.forEach(function(k){
+        var v=result[k];
+        var vStr='';
+        if(v==null){vStr='<span class="dim">—</span>';}
+        else if(typeof v==='boolean'){vStr=v?'<span class="typed-verdict-ok">yes</span>':'<span class="typed-verdict-bad">no</span>';}
+        else if(typeof v==='number'){vStr=esc(String(v));}
+        else if(typeof v==='string'){vStr=esc(v)||'<span class="dim">—</span>';}
+        else if(Array.isArray(v)){
+          if(!v.length){vStr='<span class="dim">none</span>';}
+          else{vStr='<ul class="typed-file-list">'+v.slice(0,40).map(function(x){return '<li class="typed-gap">'+esc(typeof x==='object'?JSON.stringify(x):String(x==null?'':x))+'</li>';}).join('')+(v.length>40?'<li class="dim">…+'+(v.length-40)+' more</li>':'')+'</ul>';}
+        }else if(typeof v==='object'){
+          // Nested object: render as a nested kv table (not raw JSON).
+          var nestedRows='';
+          Object.keys(v).forEach(function(nk){var nv=v[nk];nestedRows+='<div class="typed-kv-key">'+esc(nk)+'</div><div class="typed-kv-val">'+esc(nv==null?'':typeof nv==='object'?JSON.stringify(nv):String(nv))+'</div>';});
+          vStr=nestedRows?'<div class="typed-kv">'+nestedRows+'</div>':'<span class="dim">[object]</span>';
+        }
+        rows+='<div class="typed-kv-key">'+esc(k)+'</div><div class="typed-kv-val">'+vStr+'</div>';
+      });
+      if(rows)out+='<div class="typed-kv">'+rows+'</div>';
+    }
+
+    // If no content was rendered at all (result was an empty object), show a placeholder.
+    if(!out)out='<div class="dim">empty result</div>';
+
+    // Raw JSON collapsed below the typed view — power users can inspect the full structure.
+    // rawJsonDetails is defined below in the file (function hoisting makes it available here).
+    // AC4: raw JSON <details> is rendered here — this is the single owner of the raw JSON block.
+    // resultsPanel does NOT append a second rawJsonDetails call (v3 correction #4).
+    // openRaw persistence is wired in wire() via the [data-rlabel] ancestor key.
+    out+=rawJsonDetails(result);
+
+    return '<div class="typed-result">'+out+'</div>';
+  }catch(e){
+    // On ANY error: fall back silently to collapsed raw text. NEVER throws into the webview.
+    var fb='';try{fb=JSON.stringify(result,null,2);}catch(e2){fb='[unserializable]';}
+    return '<details class="raw-json-details"><summary class="raw-json-summary">Result (parse error — raw)</summary><div class="raw-json-body"><pre class="raw-json-pre">'+esc(fb)+'</pre></div></details>';
+  }
 }
 
 function agentSub(a){
@@ -352,7 +656,7 @@ function agentSub(a){
   return (a.tail||[]).slice(-30).map(t=>'<div class="ev '+(t.kind==='tool'?'tool':'')+'">'+esc(t.text)+'</div>').join('')||'<div class="ev dim">no output yet</div>';
 }
 function agentsPanel(){
-  if(!snap.agents.length)return panel('agents','Agents','<div class="dim pad">No agents started yet — workflow is initialising…</div>');
+  if(!snap.agents.length)return '<div class="dim pad">No agents started yet — workflow is initialising…</div>';
   // M2-AgentFold: apply default open state when no persisted state exists for this agent.
   // run agents default to expanded; done/dead default to collapsed.
   // Persisted state (state.openAgents[id] === true/false) takes precedence over the default.
@@ -442,7 +746,7 @@ function agentsPanel(){
       +promptDisc
       +'<div class="sub" id="'+subId+'">'+agentSub(a)+'</div></div>';
   }).join('');
-  return panel('agents','Agents',capWarn+collapseAllBtn+'<div class="cards">'+cards+'</div>');
+  return capWarn+collapseAllBtn+'<div class="cards">'+cards+'</div>';
 }
 
 function findingsPanel(){
@@ -452,7 +756,7 @@ function findingsPanel(){
     var emptyMsg=snap.loop.passes>0
       ?'No findings from reviewers in pass '+safeN(snap.loop.passes)+' — run is clean.'
       :'No findings recorded yet.';
-    return panel('findings','Findings','<div class="dim pad">'+esc(emptyMsg)+'</div>');
+    return '<div class="dim pad">'+esc(emptyMsg)+'</div>';
   }
   snap.labels.forEach(l=>{if(state.fRev[l]===undefined)state.fRev[l]=1;});
   const sevs=[...new Set(snap.allFindings.map(f=>f.severity||'UNRATED'))];
@@ -485,10 +789,26 @@ function findingsPanel(){
   // snap.labels initialises state.fRev[''] = 1 when such findings exist, so the filter
   // passes correctly. The explicit fallback makes the intent visible and prevents future drift.
   const list=snap.allFindings.filter(f=>state.fRev[f.reviewer||'']&&state.fSev[f.severity||'UNRATED']);
+  // Findings pagination: PAGE_SIZE=50 items per page to avoid a wall of 100+ items.
+  // state.findPage is clamped to valid range on every render.
+  var totalPages=Math.max(1,Math.ceil(list.length/PAGE_SIZE));
+  if(state.findPage>=totalPages)state.findPage=Math.max(0,totalPages-1);
+  var pageStart=state.findPage*PAGE_SIZE;
+  var pageEnd=Math.min(pageStart+PAGE_SIZE,list.length);
+  var pageList=list.slice(pageStart,pageEnd);
+  // Paginator control: rendered above and below the findings list when list.length > PAGE_SIZE.
+  var paginator='';
+  if(list.length>PAGE_SIZE){
+    var prevDis=state.findPage===0?' disabled':'';
+    var nextDis=state.findPage>=totalPages-1?' disabled':'';
+    // data-total on findNextBtn carries totalPages so the wire() handler can guard
+    // the increment with a bounds check (mirrors findPrevBtn's state.findPage>0 guard).
+    paginator='<div class="find-paginator"><button class="find-page-btn" id="findPrevBtn"'+prevDis+' aria-label="Previous findings page">&#8592; Prev</button><span class="find-page-info">Page '+esc(String(state.findPage+1))+' of '+esc(String(totalPages))+' <span aria-hidden="true">&middot;</span> showing '+esc(String(pageStart+1))+'&#8211;'+esc(String(pageEnd))+' of '+esc(String(list.length))+'</span><button class="find-page-btn" id="findNextBtn" data-total="'+safeN(totalPages)+'"'+nextDis+' aria-label="Next findings page">Next &#8594;</button></div>';
+  }
   // Object.create(null): no prototype chain, so pass values equal to '__proto__' or
   // 'constructor' cannot pollute Object.prototype — consistent with openAgents/fRev/fSev.
-  const byP=Object.create(null);list.forEach(f=>{(byP[f.pass]=byP[f.pass]||[]).push(f);});
-  let body=chips;
+  const byP=Object.create(null);pageList.forEach(f=>{(byP[f.pass]=byP[f.pass]||[]).push(f);});
+  let body=chips+paginator;
   Object.keys(byP).sort((a,b)=>(Number(b)||0)-(Number(a)||0)).forEach(p=>{
     const fc=byP[p].length;body+='<h4 class="pass-heading">Pass '+esc(p)+' · '+fc+' finding'+(fc!==1?'s':'')+'</h4>';
     body+=byP[p].map(f=>{
@@ -517,7 +837,8 @@ function findingsPanel(){
     var why=parts.length?(' Filters hiding: '+parts.join('; ')+'.'):'';
     body+='<div class="findings-empty"><div class="findings-empty-msg">No findings match the active filters.'+why+'</div><button class="findings-empty-btn" id="emptyFiltersBtn">Clear filters</button></div>';
   }
-  return panel('findings','Findings',body);
+  if(list.length>PAGE_SIZE)body+=paginator;
+  return body;
 }
 
 // AC4: Render collapsed raw-JSON below the analyzed view so power users can inspect
@@ -525,100 +846,107 @@ function findingsPanel(){
 // which are collapsible without JS and CSP-safe (no inline handlers needed).
 // JSON.stringify is intentionally used here — this IS the raw JSON view.
 // The pre content is passed through esc() to prevent injection from adversarial JSON values.
+// openRaw persistence: the <details> emits a raw-json-details CSS class. wire() attaches a
+// 'toggle' listener that walks up to the closest [data-rlabel] ancestor to get the state key,
+// then writes state.openRaw[key]. On re-render, the open attribute is applied from state.openRaw
+// by checking the closest [data-rlabel] — this is done via the openRaw-lookup in wire(), not here,
+// because rawJsonDetails is called from renderTypedResult which has no stateKey context.
+// The data-ropen attribute is set when openRaw state is truthy; wire() reads it on init.
 function rawJsonDetails(obj){
   if(!obj||typeof obj!=='object')return '';
   var json='';try{json=JSON.stringify(obj,null,2);}catch(e){json='[unserializable]';}
   return '<details class="raw-json-details"><summary class="raw-json-summary">Raw JSON</summary><div class="raw-json-body"><pre class="raw-json-pre">'+esc(json)+'</pre></div></details>';
 }
 
-// AC4: Parse an implementer markdown report (## Implementation…) into a structured view.
-// Sections: Status, What Was Built, Files Changed (markdown table), Decisions, Test Results.
+// AC4: Parse a structured markdown report into a rich view.
+// Generic: renders EVERY ## / ### section — not a hardcoded allow-list.
+// Special cases preserved for Status (verdict badge) and Files Changed (table).
+// Inline markdown: bullet lists, bold, code spans rendered as safe HTML tags.
+// No aggressive truncation — result-body already scrolls.
 // NEVER throws — all errors caught; returns null for caller to fall back to <pre>.
 // Regex notes: this function body lives inside a TypeScript template literal.
 //   - RegExp literals need doubled backslashes (\\\\s → \\s in output → regex \s).
-//   - Avoid end-of-string anchors in patterns (constraint: no special chars in shipped HTML).
-//     Use string indexOf/slice to delimit sections instead.
+//   - All esc() calls happen BEFORE markdown transforms so safe tags are emitted
+//     from known patterns only — transcript-derived text can never inject raw HTML.
 function parseImplementerMarkdown(text){
   if(!text||typeof text!=='string')return null;
   try{
-    // Quick check: require at least one implementation-related heading.
-    if(text.indexOf('## Implementation')===-1&&text.indexOf('### What Was Built')===-1&&text.indexOf('### Status')===-1)return null;
+    // Spec v3 correction #9: normalize literal \\n/\\r/\\t escape sequences to real
+    // control characters before parsing. Journal JSON can double-encode newlines so the
+    // parsed JS string contains the literal two-char sequence backslash+n. Without this
+    // step, the section-splitter misses all boundaries and renderInlineMd misses lists.
+    text=normalizeLiteralEscapes(text);
+    // Broad guard: require at least one ## or ### heading anywhere in the text.
+    // This accepts any structured markdown report, not just "## Implementation" reports.
+    if(!/(?:^|\\n)#{2,3} /.test(text))return null;
+    // renderInlineMd and applyInlineSpans are defined at module scope above —
+    // extracted so renderTypedResult's heading-less summary fallback can call them.
     var out='<div class="impl-report">';
-    // Helper: extract content between a heading line and the next ### or ## heading.
-    function extractSection(heading){
-      var idx=text.indexOf(heading);
-      if(idx===-1)return '';
-      var afterHeading=text.indexOf('\\n',idx);
-      if(afterHeading===-1)return '';
-      var rest=text.slice(afterHeading+1);
-      // Find the next heading at the same or higher level.
-      // Double-backslash escaping: this code lives inside a TypeScript template literal.
-      // '\\n' in the TS source becomes '\\n' in the output JS string, which RegExp then
-      // interprets as a literal newline character. Any future edit to this RegExp must
-      // account for this double-escaping: one level for the TS template literal, one for
-      // the JS RegExp constructor. A typo producing an invalid pattern throws at runtime.
-      var nextH=rest.search(new RegExp('\\n##'));
-      if(nextH===-1)return rest;
-      return rest.slice(0,nextH);
-    }
-    // Status section
-    var stBody=extractSection('### Status');
-    if(stBody){
-      var stLine=stBody.trim().split('\\n')[0].trim();
-      if(stLine){
-        var isOk=/COMPLETE|DONE|PASS|SUCCESS/i.test(stLine);
-        var isBad=/BLOCKED|FAIL|ERROR/i.test(stLine);
-        var cls=isOk?'typed-verdict-ok':isBad?'typed-verdict-bad':'';
-        out+='<div class="impl-status'+(cls?' '+cls:'')+'">'+esc(stLine)+'</div>';
+    // Split on any ## or ### heading boundary.
+    // \\n?(?=#{2,3} ) splits before each heading line (keeps the heading in the chunk).
+    // The first chunk may be preamble text before the first heading — we skip it.
+    var chunks=text.split(new RegExp('\\n(?=#{2,3} )'));
+    chunks.forEach(function(chunk){
+      var nl=chunk.indexOf('\\n');
+      var headingLine=(nl===-1?chunk:chunk.slice(0,nl)).trim();
+      var body=(nl===-1?'':chunk.slice(nl+1));
+      // Strip leading ## / ### and trim to get the heading label.
+      var label=headingLine.replace(/^#{2,3} /,'').trim();
+      if(!label)return; // skip preamble / empty
+      var lowerLabel=label.toLowerCase();
+      // --- Special case: Status ---
+      if(lowerLabel==='status'){
+        var stLine=body.trim().split('\\n')[0].trim();
+        if(stLine){
+          var isOk=/COMPLETE|DONE|PASS|SUCCESS/i.test(stLine);
+          var isBad=/BLOCKED|FAIL|ERROR/i.test(stLine);
+          var cls=isOk?'typed-verdict-ok':isBad?'typed-verdict-bad':'';
+          out+='<div class="impl-status'+(cls?' '+cls:'')+'">'+esc(stLine)+'</div>';
+        }
+        return;
       }
-    }
-    // What Was Built section
-    var builtBody=extractSection('### What Was Built');
-    if(builtBody){
-      var builtText=builtBody.trim();
-      if(builtText){out+='<div class="typed-section-label">What was built</div><div class="typed-summary">'+esc(builtText.slice(0,600))+'</div>';}
-    }
-    // Files Changed section — parse markdown table rows.
-    var filesBody=extractSection('### Files Changed');
-    if(filesBody){
-      var tableRows=filesBody.split('\\n').filter(function(l){
-        var t=l.trim();
-        // Keep rows that look like table data (start and end with |).
-        // Reject separator rows that contain only pipes, dashes, spaces, colons.
-        if(t.length<2||t.charAt(0)!=='|'||t.charAt(t.length-1)!=='|')return false;
-        var inner=t.slice(1,t.length-1);
-        return inner.replace(/[|\\s\\-:]/g,'').length>0;
-      });
-      // First matched row is the header row; remaining are data.
-      var dataRows=tableRows.slice(1);
-      if(dataRows.length){
-        out+='<div class="typed-section-label">Files changed ('+dataRows.length+')</div>';
-        out+='<ul class="typed-file-list">';
-        dataRows.slice(0,40).forEach(function(row){
-          var cols=row.split('|').filter(function(c){return c.trim().length>0;});
-          if(cols.length>=1){out+='<li class="typed-file">'+esc(cols[0].trim())+(cols.length>=2?' <span class="dim">'+esc(cols[1].trim())+'</span>':'')+'</li>';}
+      // --- Special case: Files Changed — parse markdown table ---
+      if(lowerLabel==='files changed'){
+        var tableRows=body.split('\\n').filter(function(l){
+          var t=l.trim();
+          if(t.length<2||t.charAt(0)!=='|'||t.charAt(t.length-1)!=='|')return false;
+          var inner=t.slice(1,t.length-1);
+          return inner.replace(/[|\\s\\-:]/g,'').length>0;
         });
-        if(dataRows.length>40)out+='<li class="dim">…+'+(dataRows.length-40)+' more</li>';
-        out+='</ul>';
+        var dataRows=tableRows.slice(1);
+        if(dataRows.length){
+          out+='<div class="typed-section-label">Files changed ('+dataRows.length+')</div>';
+          out+='<ul class="typed-file-list">';
+          dataRows.slice(0,40).forEach(function(row){
+            var cols=row.split('|').filter(function(c){return c.trim().length>0;});
+            if(cols.length>=1){out+='<li class="typed-file">'+esc(cols[0].trim())+(cols.length>=2?' <span class="dim">'+esc(cols[1].trim())+'</span>':'')+'</li>';}
+          });
+          if(dataRows.length>40)out+='<li class="dim">…+'+(dataRows.length-40)+' more</li>';
+          out+='</ul>';
+        }
+        return;
       }
-    }
-    // Decisions section
-    var dBody=extractSection('### Decisions Made');
-    if(!dBody)dBody=extractSection('### Decisions');
-    if(dBody){
-      var dText=dBody.trim();
-      if(dText){out+='<div class="typed-section-label">Decisions</div><div class="typed-summary">'+esc(dText.slice(0,400))+'</div>';}
-    }
-    // Test Results section
-    var tBody=extractSection('### Test Results');
-    if(tBody){
-      var tText=tBody.trim();
-      if(tText){
-        var tOk=/passed|green|ok/i.test(tText);
-        var tBad=/fail|error|broken/i.test(tText);
-        out+='<div class="typed-section-label">Test results</div><div class="typed-summary'+(tOk?' typed-verdict-ok':tBad?' typed-verdict-bad':'')+'">'+esc(tText.slice(0,300))+'</div>';
+      // --- Special case: Test Results — apply verdict colour ---
+      if(lowerLabel==='test results'){
+        var tText=body.trim();
+        if(tText){
+          var tOk=/passed|green|ok/i.test(tText);
+          var tBad=/fail|error|broken/i.test(tText);
+          var tCls=tOk?' typed-verdict-ok':tBad?' typed-verdict-bad':'';
+          out+='<div class="typed-section-label">'+esc(label)+'</div>';
+          out+='<div class="typed-summary'+tCls+'">'+renderInlineMd(esc(tText))+'</div>';
+        }
+        return;
       }
-    }
+      // --- Generic section: render heading + inline-markdown body ---
+      // Skip top-level ## headings that are just container titles (e.g. "## Implementation: X").
+      // They carry no body content worth rendering on their own; sub-sections handle detail.
+      if(headingLine.startsWith('## ')&&!body.trim())return;
+      var bodyText=body.trim();
+      if(!bodyText&&headingLine.startsWith('## '))return;
+      out+='<div class="typed-section-label">'+esc(label)+'</div>';
+      if(bodyText){out+='<div class="typed-summary">'+renderInlineMd(esc(bodyText))+'</div>';}
+    });
     out+='</div>';
     return out;
   }catch(e){return null;}
@@ -630,13 +958,16 @@ function resultsPanel(){
   // table. NEVER a bare JSON dump. Scrollable container prevents page overflow.
   // data-rlabel carries a stable key for scroll-position preservation across re-renders (AC3).
   // AC4: raw JSON is collapsed below the analyzed view via <details> (no JS needed).
-  const body=snap.structuredResults.map(r=>'<div class="finding result" data-rlabel="'+esc(r.label+':'+r.pass)+'"><div class="ttl"><b>'+esc(r.label)+'</b> <span class="dim">pass '+esc(r.pass)+'</span></div><div class="result-body">'+renderTypedResult(r.agentType,r.result)+rawJsonDetails(r.result)+'</div></div>').join('');
-  return panel('results','Results',body);
+  // v3 BINDING: render content directly, no panel() wrapper (tabs provide the container).
+  // AC4: rawJsonDetails is rendered inside renderTypedResult — do NOT append it again here.
+  // Each result card contains exactly one collapsed raw-JSON <details> block (v3 correction #4).
+  return snap.structuredResults.map(r=>'<div class="finding result" data-rlabel="'+esc(r.label+':'+r.pass)+'"><div class="ttl"><b>'+esc(r.label)+'</b> <span class="dim">pass '+esc(r.pass)+'</span></div><div class="result-body">'+renderTypedResult(r.agentType,r.result)+'</div></div>').join('');
 }
 function verdictsPanel(){
   // Preserve insertion order (journal order) — Object.keys() on modern JS maintains
   // insertion order for string keys, which matches the pass order reviewers appeared.
-  const body=Object.keys(snap.verdicts).map(l=>{
+  // v3 BINDING: render content directly, no panel() wrapper (tabs provide the container).
+  return Object.keys(snap.verdicts).map(l=>{
     const displayLabel=snap.verdictLabels&&snap.verdictLabels[l]?snap.verdictLabels[l]:l;
     var vText=snap.verdicts[l]||'(pending)';
     // Apply semantic color to match the typed-verdict pattern in resultsPanel/agentSub.
@@ -644,11 +975,32 @@ function verdictsPanel(){
     var vCls=/APPROVED|PASS/i.test(vText)?'ok':/NEEDS_WORK|FAIL|REJECT/i.test(vText)?'bad':'dim';
     return '<div class="verdict-item"><b>'+esc(displayLabel)+'</b> <span class="'+vCls+'">'+esc(vText)+'</span></div>';
   }).join('');
-  return panel('verdicts','Verdicts',body);
 }
 function changedPanel(){
+  // v3 BINDING: render content directly, no panel() wrapper (tabs provide the container).
+  // Primary section: files reported by agent structured results (spec v3 correction #7).
+  // Secondary section: mtime-based recently-touched files from walkChanged().
+  var out='';
+  var byAgents=snap.changedByAgents||[];
   const f=snap.changed||[];
-  return panel('changed','Changed files','<div class="dim changed-caption">Files modified in the last '+CHANGED_MAX_MIN+' min</div>'+(f.length?'<ul class="files">'+f.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>':'<div class="dim">No files changed in the last '+CHANGED_MAX_MIN+' min — changes appear here automatically</div>'));
+  // Unified empty state: when both sources are empty, emit a single consolidated message.
+  if(!byAgents.length&&!f.length){
+    out+='<div class="dim">No files reported yet — agent results and recent fs changes will appear here</div>';
+  }else{
+    if(byAgents.length){
+      out+='<div class="dim changed-caption">Files reported by agents ('+byAgents.length+')</div>';
+      out+='<ul class="files">'+byAgents.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul>';
+    }else{
+      out+='<div class="dim changed-caption">No files reported by agents yet</div>';
+    }
+    if(f.length){
+      out+='<div class="dim changed-caption changed-caption-mt">Recently touched (last '+esc(String(CHANGED_MAX_MIN))+' min)</div>';
+      out+='<ul class="files">'+f.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul>';
+    }else{
+      out+='<div class="dim">No files changed in the last '+esc(String(CHANGED_MAX_MIN))+' min — changes appear here automatically</div>';
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -695,13 +1047,13 @@ function tokenBarChart(){
     rows+='<g aria-hidden="true">'
       // Agent label — right-aligned in the label column, clipped.
       // CSS class .chart-bar-label handles fill via --vscode-* variable (no inline style).
-      +'<text x="'+(LABEL_W-4)+'" y="'+(y+BAR_H-4)+'" text-anchor="end" font-size="10" class="chart-bar-label" font-family="var(--vscode-font-family,sans-serif)">'
+      +'<text x="'+(LABEL_W-4)+'" y="'+(y+BAR_H-4)+'" text-anchor="end" class="chart-bar-label">'
       +lblTrunc
       +'</text>'
       // Bar rect — fill via CSS class .chart-bar (defined in forced-colors block + VS Code theming).
       +(barW>0?'<rect x="'+LABEL_W+'" y="'+y+'" width="'+barW+'" height="'+BAR_H+'" rx="2" class="chart-bar" data-testid="chart-bar"/>':'')
       // Value label — CSS class .chart-val-label handles fill + opacity.
-      +'<text x="'+(LABEL_W+barW+4)+'" y="'+(y+BAR_H-4)+'" font-size="10" class="chart-val-label" font-family="var(--vscode-font-family,sans-serif)">'+fmtTok(tok)+'</text>'
+      +'<text x="'+(LABEL_W+barW+4)+'" y="'+(y+BAR_H-4)+'" class="chart-val-label">'+fmtTok(tok)+'</text>'
       +'</g>';
   }
   var cappedNote=capped?'<div class="dim chart-cap-note">Showing '+BAR_CAP+' of '+safeN(snap.agents.length)+' agents</div>':'';
@@ -732,11 +1084,11 @@ function tokenTrendChart(){
     var pts1='M'+PAD+' '+sy+' L'+(W-PAD)+' '+sy+' ';
     var areaPath1=pts1+'L'+(W-PAD)+' '+(H-PAD)+' L'+PAD+' '+(H-PAD)+' Z';
     return '<svg xmlns="http://www.w3.org/2000/svg" width="'+W+'" height="'+H+'" role="img" aria-label="Cumulative output tokens trend" data-testid="token-trend-chart">'
-      // CSS classes replace inline style attrs so forced-colors @media overrides work correctly.
-      +'<line x1="'+PAD+'" y1="'+(H-PAD)+'" x2="'+(W-PAD)+'" y2="'+(H-PAD)+'" class="chart-axis-line" stroke-width="1"/>'
+      // CSS classes replace inline style/presentation attrs so forced-colors @media overrides work correctly.
+      +'<line x1="'+PAD+'" y1="'+(H-PAD)+'" x2="'+(W-PAD)+'" y2="'+(H-PAD)+'" class="chart-axis-line"/>'
       +'<path d="'+areaPath1+'" class="chart-trend-area" data-testid="trend-area"/>'
-      +'<path d="'+pts1+'" class="chart-trend-line" fill="none" stroke-width="1.5" data-testid="trend-line"/>'
-      +'<text x="'+(W-PAD)+'" y="'+(PAD+8)+'" text-anchor="end" font-size="9" class="chart-trend-label" font-family="var(--vscode-font-family,sans-serif)">'+fmtTok(maxCum)+'</text>'
+      +'<path d="'+pts1+'" class="chart-trend-line" data-testid="trend-line"/>'
+      +'<text x="'+(W-PAD)+'" y="'+(PAD+8)+'" text-anchor="end" class="chart-trend-label">'+fmtTok(maxCum)+'</text>'
       +'</svg>';
   }
   // Build polyline points
@@ -752,16 +1104,16 @@ function tokenTrendChart(){
   var areaPath=pts+'L'+xN+' '+(H-PAD)+' L'+x0+' '+(H-PAD)+' Z';
   // CSS classes replace all inline style attrs on SVG elements so the forced-colors
   // @media block can override them correctly (inline styles have higher specificity
-  // in normal mode, but forced-colors UA stylesheet overrides them regardless).
+  // in normal mode, but forced-colors UA stylesheet wins regardless; using classes is the consistent pattern).
   return '<svg xmlns="http://www.w3.org/2000/svg" width="'+W+'" height="'+H+'" role="img" aria-label="Cumulative output tokens trend" data-testid="token-trend-chart">'
-    // X axis
-    +'<line x1="'+PAD+'" y1="'+(H-PAD)+'" x2="'+(W-PAD)+'" y2="'+(H-PAD)+'" class="chart-axis-line" stroke-width="1"/>'
+    // X axis — stroke-width and stroke via CSS class chart-axis-line (forced-colors compatible)
+    +'<line x1="'+PAD+'" y1="'+(H-PAD)+'" x2="'+(W-PAD)+'" y2="'+(H-PAD)+'" class="chart-axis-line"/>'
     // Area fill (transparent tint)
     +'<path d="'+areaPath+'" class="chart-trend-area" data-testid="trend-area"/>'
-    // Line
-    +'<path d="'+pts+'" class="chart-trend-line" fill="none" stroke-width="1.5" data-testid="trend-line"/>'
-    // Max label
-    +'<text x="'+(W-PAD)+'" y="'+(PAD+8)+'" text-anchor="end" font-size="9" class="chart-trend-label" font-family="var(--vscode-font-family,sans-serif)">'+fmtTok(maxCum)+'</text>'
+    // Line — stroke-width via CSS class chart-trend-line (forced-colors compatible)
+    +'<path d="'+pts+'" class="chart-trend-line" data-testid="trend-line"/>'
+    // Max label — font-size and font-family via CSS class chart-trend-label (forced-colors compatible)
+    +'<text x="'+(W-PAD)+'" y="'+(PAD+8)+'" text-anchor="end" class="chart-trend-label">'+fmtTok(maxCum)+'</text>'
     +'</svg>';
 }
 
@@ -772,10 +1124,10 @@ function chartsPanel(){
   // tokenBarChart() returns its own <div class="chart-scroll"> (so the capped-note sits outside it),
   // while tokenTrendChart() returns a bare <svg> (wrapped here). Do not "fix" this asymmetry
   // without also moving the cappedNote construction inside tokenBarChart().
-  var body='<div class="charts-row">'
+  // v3 BINDING: render content directly, no panel() wrapper (tabs provide the container).
+  return '<div class="charts-row">'
     +'<div class="chart-block"><div class="chart-title">Output tokens per agent</div>'+bar+'</div>'
     +'<div class="chart-block"><div class="chart-title">Cumulative tokens</div><div class="chart-scroll" data-testid="trend-chart-scroll">'+trend+'</div></div>'
     +'</div>';
-  return panel('charts','Charts',body);
 }
 `;

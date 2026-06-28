@@ -2,9 +2,49 @@ import { describe, it, expect } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { walkChanged } from '../src/data/changed';
+import { walkChanged, WALK_FILE_LIMIT, WALK_MAX_DEPTH } from '../src/data/changed';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
+
+// ---------------------------------------------------------------------------
+// Constants: exported for testability (mirrors MAX_JSONL_BYTES in parse.ts).
+// These are safety boundaries — verifying they are exported and hold the
+// expected values confirms they are part of the public contract and cannot
+// silently change without a test failure.
+// ---------------------------------------------------------------------------
+describe('WALK_FILE_LIMIT and WALK_MAX_DEPTH constants', () => {
+  it('WALK_FILE_LIMIT is exported and equals 5000', () => {
+    expect(WALK_FILE_LIMIT).toBe(5000);
+  });
+
+  it('WALK_MAX_DEPTH is exported and equals 16', () => {
+    expect(WALK_MAX_DEPTH).toBe(16);
+  });
+
+  it('walkChanged stops without throwing when file count reaches WALK_FILE_LIMIT', () => {
+    // Create a flat directory with exactly WALK_FILE_LIMIT + 1 files.
+    // This test verifies the limit-hit early-return path executes without error.
+    // WALK_FILE_LIMIT is used directly so the test automatically tracks constant changes.
+    // The output is capped at 30 entries regardless of how many files exist.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'changed-limit-test-'));
+    try {
+      const now = new Date();
+      const count = WALK_FILE_LIMIT + 1;
+      for (let i = 0; i < count; i++) {
+        const f = path.join(tmpDir, `f${i}.txt`);
+        fs.writeFileSync(f, '');
+        fs.utimesSync(f, now, now);
+      }
+      let result: string[] | null;
+      expect(() => { result = walkChanged(tmpDir, 120); }).not.toThrow();
+      expect(Array.isArray(result!)).toBe(true);
+      // Output must respect the 30-entry cap even with many files.
+      expect(result!.length).toBeLessThanOrEqual(30);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('walkChanged', () => {
   it('returns null for an empty repo string', () => {

@@ -24,8 +24,9 @@ active without any per-workflow setup.
 - **Findings** — every `findings[]` result aggregated, with per-role and
   per-severity filter chips; click a finding to read its *Why* and *Fix*.
 - **Structured results**, **Verdicts**, and **Changed files** panels.
-- **Toggle any panel** on/off from the top bar; layout and expansion state are
-  remembered.
+- **Tabbed layout** — six tabs (Agents, Findings, Verdicts, Changed, Charts, Results)
+  below an always-visible Overview strip. Tab selection and per-tab scroll position are
+  remembered across refreshes.
 - **Live updates** — refreshes instantly on workflow file changes (and on a
   configurable interval), preserving your scroll position.
 - **Run picker** — pin any recent workflow run via the **Select Workflow Run…**

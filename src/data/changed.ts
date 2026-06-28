@@ -10,7 +10,15 @@ import * as path from 'path';
 // mid-directory — the early return exits that frame only; sibling directories
 // at parent levels continue. Overshoot is bounded by the number of entries in
 // the current directory batch when the limit fires.
-const WALK_FILE_LIMIT = 5000;
+// Exported so unit tests can verify the limit is enforced without constructing
+// 5001 files; mirrors the pattern used for MAX_JSONL_BYTES in parse.ts.
+export const WALK_FILE_LIMIT = 5000;
+
+// Maximum recursion depth for walkChanged. Prevents call-stack exhaustion on
+// pathologically deep trees or (on Windows) junction-point cycles.
+// 16 levels (depth starts at 15, guard fires at depth < 0) covers all realistic
+// repo structures. Exported alongside WALK_FILE_LIMIT for testability.
+export const WALK_MAX_DEPTH = 16;
 
 // Walk the repo directory and return files modified within maxAgeSec seconds,
 // sorted and capped at 30 entries. Returns null if repo is empty/non-existent.
@@ -23,9 +31,9 @@ export function walkChanged(repo: string, maxAgeSec: number): string[] | null {
   const out: string[] = [];
   let visited = 0;
   // Depth limit prevents call-stack exhaustion on pathologically deep trees or
-  // (on Windows) junction-point cycles. 16 levels (0 through 15 inclusive) covers
-  // all realistic repo structures.
-  const walk = (dir: string, depth = 15): void => {
+  // (on Windows) junction-point cycles. WALK_MAX_DEPTH levels (0 through WALK_MAX_DEPTH-1
+  // inclusive) covers all realistic repo structures. depth starts at WALK_MAX_DEPTH-1.
+  const walk = (dir: string, depth = WALK_MAX_DEPTH - 1): void => {
     /* c8 ignore next */ // Depth guard: only reachable after 16 levels of nesting — not worth constructing a fixture
     if (depth < 0) return;
     let entries: fs.Dirent[];
