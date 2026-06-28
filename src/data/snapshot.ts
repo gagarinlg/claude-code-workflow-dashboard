@@ -28,6 +28,13 @@ export const CHANGED_MAX_SECS = 120;
 // Exported so html.ts can display the exact cap value in the user-visible warning.
 export const MAX_AGENTS = 200;
 
+// Maximum character length for the per-agent initiating prompt carried in the snapshot.
+// Workflow prompts can embed large findings JSON, so we cap to avoid bloating the
+// snapshot payload. The webview renders the capped value in a scrollable <pre>;
+// the Copy button sends the same capped text (full transcript is on disk).
+// 10 000 chars ≈ 10 KiB which covers typical prompt + system instructions comfortably.
+export const MAX_PROMPT_CHARS = 10_000;
+
 // Maximum size in bytes for agent-<id>.meta.json files. Files larger than this
 // are treated as if they had no agentType field — the label falls back to classify().
 // 64 KiB is far more than any realistic meta.json (typically < 1 KiB). This guard
@@ -62,12 +69,22 @@ export interface LoopStats {
   passes: number;
   findings: number;
   sevTotals: Record<string, number>;
+  /** Sum of input_tokens across all agents — only present when at least one
+   *  agent transcript contains the field; undefined otherwise. */
+  inTok?: number;
+  /** Sum of cache_creation_input_tokens — only present when field exists. */
+  cacheCreate?: number;
+  /** Sum of cache_read_input_tokens — only present when field exists. */
+  cacheRead?: number;
 }
 
 export interface StructuredResult {
   pass: number;
   label: string;
   key: string;
+  /** Raw agentType (namespace-stripped) for typed renderer dispatch in the webview.
+   *  Matches the agentType field on the Agent that produced this result. */
+  agentType?: string;
   result: Record<string, unknown>;
 }
 
@@ -75,6 +92,10 @@ export interface Agent {
   id: string;
   label: string;
   key: string;
+  /** Raw agentType from meta.json (namespace-stripped, e.g. 'implementer', 'test-verifier').
+   *  Used by the webview to dispatch typed result renderers. Absent when agentType is
+   *  unknown or the agent was classified by prompt heuristic only. */
+  agentType?: string;
   status: 'run' | 'done' | 'dead';
   elapsed: number;
   tokens: number;
@@ -88,6 +109,17 @@ export interface Agent {
   verdict?: string;
   result?: Record<string, unknown>;
   resultText?: string;
+  /** input_tokens for this agent — only present when the transcript contains
+   *  the field; undefined otherwise (never 0-as-real). */
+  inTok?: number;
+  /** cache_creation_input_tokens for this agent — only present when field exists. */
+  cacheCreate?: number;
+  /** cache_read_input_tokens for this agent — only present when field exists. */
+  cacheRead?: number;
+  /** Full initiating prompt (first user message). Capped at MAX_PROMPT_CHARS to
+   *  prevent large findings-embedded prompts from bloating the snapshot payload.
+   *  Absent when the transcript has no user event. */
+  prompt?: string;
 }
 
 export type SnapshotOk = {
@@ -189,7 +221,14 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
   // blocking the Extension Host event loop. The UI shows a warning when capped.
   let rawFiles: string[] = [];
   try {
-    rawFiles = fs.readdirSync(wfDir).filter((f) => f.startsWith('agent-') && f.endsWith('.jsonl'));
+    // Use withFileTypes to obtain Dirent objects so we can guard against symlinks.
+    // A symlink named agent-crafted.jsonl inside a wf_* directory would otherwise be
+    // followed by jload(), potentially reading outside the trusted workflow directory.
+    // Matching the pattern in changed.ts and discovery.ts: skip any entry that is a
+    // symbolic link before checking the name filter.
+    rawFiles = fs.readdirSync(wfDir, { withFileTypes: true })
+      .filter((e) => !e.isSymbolicLink() && e.isFile() && e.name.startsWith('agent-') && e.name.endsWith('.jsonl'))
+      .map((e) => e.name);
   } catch {}
   const agentsCapped = rawFiles.length > MAX_AGENTS;
   // When capped, retain the MAX_AGENTS most-recently-modified files so we prefer
@@ -262,7 +301,16 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
     // Derive label/key: agentType from meta.json is primary; prompt-based
     // classify() + roleRules is the fallback for unknown/missing agentType.
     const fromType = agentTypeToLabel(metaAgentType);
-    const { label, key } = fromType ?? classify(firstUserText(events), cfg.roleRules);
+    // firstUserText is called once; its result is reused for both labelling and
+    // the prompt field so we don't traverse the events array twice.
+    const promptFull = firstUserText(events);
+    const { label, key } = fromType ?? classify(promptFull, cfg.roleRules);
+    // cleanType: namespace-stripped agentType string for typed renderer dispatch.
+    // Only set when the type was recognised (fromType != null), so the webview
+    // renderer can use it as a reliable switch key without guessing.
+    const cleanType: string | undefined = fromType != null && typeof metaAgentType === 'string'
+      ? metaAgentType.replace(/^[^:]+:/, '')
+      : undefined;
 
     // transcript mtime for status / elapsed — wrap per same TOCTOU fix
     let mtime: number;
@@ -277,7 +325,7 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
     /* c8 ignore end */
 
     const status: Agent['status'] = doneIds.has(aid) ? 'done' : (now - mtime < STALE_SECS ? 'run' : 'dead');
-    const { outTok, tools, tail } = agentStats(events);
+    const { outTok, tools, tail, inTok, cacheCreate, cacheRead } = agentStats(events);
     const res = resultByAgent[aid];
     const a: Agent = {
       id: aid, label, key, status,
@@ -286,6 +334,19 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
       lastActivity: tail.length ? (tail[tail.length - 1]?.text ?? '(starting…)') : '(starting…)',
       start, mtime,
     };
+    // Carry the namespace-stripped agentType for typed result rendering in the webview.
+    if (cleanType) a.agentType = cleanType;
+    // Carry the full initiating prompt (capped) so the webview can render it
+    // in a Prompt disclosure without re-reading disk. Empty prompts are omitted.
+    if (promptFull) {
+      a.prompt = promptFull.length > MAX_PROMPT_CHARS
+        ? promptFull.slice(0, MAX_PROMPT_CHARS)
+        : promptFull;
+    }
+    // Propagate optional token fields only when present — undefined means absent.
+    if (inTok !== undefined) a.inTok = inTok;
+    if (cacheCreate !== undefined) a.cacheCreate = cacheCreate;
+    if (cacheRead !== undefined) a.cacheRead = cacheRead;
     if (res && typeof res === 'object' && Array.isArray((res as Record<string, unknown>)['findings'])) {
       a.findings = (res as Record<string, unknown>)['findings'] as Finding[];
       a.verdict = ((res as Record<string, unknown>)['verdict'] as string) || '';
@@ -334,7 +395,12 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
       }
     } else if (res && typeof res === 'object') {
       seen[key] = (seen[key] ?? 0) + 1;
-      structuredResults.push({ pass: seen[key] as number, label, key, result: res as Record<string, unknown> });
+      const sr: StructuredResult = { pass: seen[key] as number, label, key, result: res as Record<string, unknown> };
+      // Propagate agentType from the agent that produced this result — used by the
+      // webview to dispatch typed renderers. Only set when the agent is known and
+      // has a recognised agentType.
+      if (a?.agentType) sr.agentType = a.agentType;
+      structuredResults.push(sr);
     }
   }
 
@@ -348,24 +414,41 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
   else if (liveLabels.length === 1) phase = liveLabels[0] ?? 'Working';
   else phase = `${live.length} agents working`;
 
+  // Aggregate optional token fields across all agents.
+  // Only include the total in loop stats when at least one agent has the field —
+  // this preserves the "undefined means absent" contract at the loop level too.
+  const loopInTok = agents.some((a) => a.inTok !== undefined)
+    ? agents.reduce((s, a) => s + (a.inTok ?? 0), 0)
+    : undefined;
+  const loopCacheCreate = agents.some((a) => a.cacheCreate !== undefined)
+    ? agents.reduce((s, a) => s + (a.cacheCreate ?? 0), 0)
+    : undefined;
+  const loopCacheRead = agents.some((a) => a.cacheRead !== undefined)
+    ? agents.reduce((s, a) => s + (a.cacheRead ?? 0), 0)
+    : undefined;
+  const loopStats: LoopStats = {
+    phase,
+    live: live.length,
+    done: agents.filter((a) => a.status === 'done').length,
+    dead: agents.filter((a) => a.status === 'dead').length,
+    total: agents.length,
+    outTok: agents.reduce((s, a) => s + a.tokens, 0),
+    tools: agents.reduce((s, a) => s + a.tools, 0),
+    passes: Math.max(0, ...Object.values(seen)),
+    findings: allFindings.length,
+    sevTotals: sevCounts(allFindings),
+  };
+  if (loopInTok !== undefined) loopStats.inTok = loopInTok;
+  if (loopCacheCreate !== undefined) loopStats.cacheCreate = loopCacheCreate;
+  if (loopCacheRead !== undefined) loopStats.cacheRead = loopCacheRead;
+
   return {
     ok: true,
     runId: path.basename(wfDir),
     workflowDir: wfDir,
-    updatedAt: new Date().toLocaleTimeString(),
+    updatedAt: new Date().toISOString(),
     agentsCapped,
-    loop: {
-      phase,
-      live: live.length,
-      done: agents.filter((a) => a.status === 'done').length,
-      dead: agents.filter((a) => a.status === 'dead').length,
-      total: agents.length,
-      outTok: agents.reduce((s, a) => s + a.tokens, 0),
-      tools: agents.reduce((s, a) => s + a.tools, 0),
-      passes: Math.max(0, ...Object.values(seen)),
-      findings: allFindings.length,
-      sevTotals: sevCounts(allFindings),
-    },
+    loop: loopStats,
     labels: [...new Set(allFindings.map((f) => f.reviewer ?? ''))],
     agents,
     allFindings,

@@ -3,19 +3,20 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { buildSnapshot, CHANGED_MAX_SECS, MAX_AGENTS } from './data/snapshot';
+import { buildSnapshot, CHANGED_MAX_SECS, MAX_AGENTS, MAX_PROMPT_CHARS } from './data/snapshot';
 import { getHtml } from './webview/html';
 import type { Cfg, Snapshot, SnapshotOk } from './data/snapshot';
 import type { RoleRule } from './data/parse';
 import { DEFAULT_ROLE_RULES, STALE_SECS } from './data/parse';
 import { listRecentRuns, formatRelativeTime } from './data/discovery';
 import type { RecentRun } from './data/discovery';
+import { generateMarkdown, buildExportFilename } from './export/markdown';
 
 // --- Module-level state ---
 // All state declarations are hoisted above every function that closes over them
 // so there is never a TDZ (Temporal Dead Zone) risk — getCfg() references
 // pinnedDir, so pinnedDir must be declared before getCfg is defined.
-// TODO(M2): move into an activation-context object to support clean reload
+// TODO(tech-debt): move into an activation-context object to support clean reload
 // across multiple activate() calls. Deferred from M1: the activate() reset
 // block (lines ~239-262) already handles the re-activation hazard correctly;
 // the structural refactor is a code-quality improvement, not a correctness fix.
@@ -25,6 +26,9 @@ let statusItem: vscode.StatusBarItem | null = null;
 let watcher: fs.FSWatcher | null = null;
 let watchedDir: string | null = null;
 let editorPanel: vscode.WebviewPanel | null = null;
+// Output channel — created once at activation; used for diagnostic logs that
+// should not be surfaced raw in UI notifications (e.g. file-write errors).
+let outputChannel: vscode.OutputChannel | null = null;
 
 // Pinned run: when non-null, buildSnapshot uses this wf_* dir instead of
 // the auto-discovered newest. Persisted per-workspace via workspaceState.
@@ -144,6 +148,16 @@ function attachWebview(webview: vscode.Webview, disposables: vscode.Disposable[]
     else if (msg['type'] === 'guide') vscode.commands.executeCommand('claudeWorkflow.openGuide');
     else if (msg['type'] === 'openFull') vscode.commands.executeCommand('claudeWorkflow.open');
     else if (msg['type'] === 'selectRun') vscode.commands.executeCommand('claudeWorkflow.selectRun');
+    else if (msg['type'] === 'export') vscode.commands.executeCommand('claudeWorkflow.exportMarkdown');
+    else if (msg['type'] === 'copyText' && typeof msg['text'] === 'string') {
+      // Copy prompt (or any text) to the VS Code clipboard so it works inside
+      // remote/web contexts where the webview cannot access navigator.clipboard.
+      // Server-side cap guards against oversized payloads regardless of webview state.
+      vscode.env.clipboard.writeText(msg['text'].slice(0, MAX_PROMPT_CHARS)).then(
+        () => {},
+        () => {}, // ignore clipboard errors — non-critical UX
+      );
+    }
   });
   disposables.push(msgDisposable);
   if (latest) {
@@ -156,8 +170,18 @@ class DashboardViewProvider implements vscode.WebviewViewProvider {
   resolveWebviewView(view: vscode.WebviewView): void {
     // The sidebar pane is narrow; pass mode:'sidebar' so getHtml renders the
     // compact summary instead of the full six-panel layout.
-    attachWebview(view.webview, this.ctx.subscriptions, 'sidebar');
-    view.onDidDispose(() => webviews.delete(view.webview));
+    //
+    // Use a view-scoped disposables array instead of ctx.subscriptions so the
+    // message-listener is properly disposed when the view is disposed (e.g. when
+    // VS Code reparents the sidebar or on F5 reloads in the dev host). Pushing
+    // directly onto ctx.subscriptions leaks one disposable per resolveWebviewView()
+    // call because ctx.subscriptions is only drained at extension deactivation.
+    const viewDisposables: vscode.Disposable[] = [];
+    attachWebview(view.webview, viewDisposables, 'sidebar');
+    view.onDidDispose(() => {
+      webviews.delete(view.webview);
+      viewDisposables.forEach((d) => d.dispose());
+    });
     if (!latest) refresh();
   }
 }
@@ -215,6 +239,90 @@ async function runSelectRun(ctx: vscode.ExtensionContext): Promise<void> {
   refresh();
 }
 
+async function runExportMarkdown(): Promise<void> {
+  // Always export from the in-memory latest snapshot — never re-reads disk.
+  if (!latest || !latest.ok) {
+    vscode.window.showWarningMessage('No workflow run loaded yet. Wait for the dashboard to refresh and try again.');
+    return;
+  }
+  const snap = latest as SnapshotOk;
+  const markdown = generateMarkdown(snap);
+
+  // Offer both Save to file and Copy to clipboard via a quick-pick action.
+  // Save is pre-selected as the active item so users can confirm immediately
+  // without scanning both options on every invocation (it is the more common action).
+  const SAVE = 'Save to file…';
+  const COPY = 'Copy to clipboard';
+  const saveItem = { label: SAVE, detail: 'Save a .md file with findings, verdicts, and agent metrics' };
+  const copyItem = { label: COPY, detail: 'Copy the same report to the clipboard' };
+  const choice = await vscode.window.showQuickPick(
+    [saveItem, copyItem],
+    {
+      title: 'Export Workflow Run as Markdown',
+      placeHolder: 'How do you want to export the report?',
+    },
+  );
+
+  if (!choice) return; // user dismissed
+
+  if (choice.label === COPY) {
+    await vscode.env.clipboard.writeText(markdown);
+    vscode.window.showInformationMessage('Workflow run report copied to clipboard.');
+    return;
+  }
+
+  // Save to file — showSaveDialog lets the user choose the path.
+  // This is the ONLY permitted write in this extension; never writes to ~/.claude or the repo.
+  // buildExportFilename() produces a sanitised, timestamped filename per ROADMAP M2-Export-Name.
+  const fname = buildExportFilename(snap);
+  const defaultUri = vscode.workspace.workspaceFolders?.length
+    ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0]!.uri, fname)
+    : vscode.Uri.file(fname);
+
+  const dest = await vscode.window.showSaveDialog({
+    defaultUri,
+    filters: { 'Markdown': ['md'] },
+    saveLabel: 'Export',
+    title: 'Save Workflow Run Report',
+  });
+
+  if (!dest) return; // user cancelled
+
+  try {
+    const bytes = Buffer.from(markdown, 'utf8');
+    await vscode.workspace.fs.writeFile(dest, bytes);
+    const open = 'Open file';
+    const response = await vscode.window.showInformationMessage(
+      `Workflow run report saved to ${dest.fsPath}`,
+      open,
+    );
+    if (response === open) {
+      await vscode.commands.executeCommand('vscode.open', dest);
+    }
+  } catch (err) {
+    // Show a generic message in the UI — never expose raw error text in a notification
+    // because it can contain filesystem paths, internal error details, or other
+    // information that should not be surfaced to the user without sanitisation.
+    // Full diagnostic details go to the output channel for developer inspection.
+    vscode.window.showErrorMessage(
+      'Failed to save the workflow report. See the "Claude Code Workflow Dashboard" output channel for details.',
+    );
+    if (outputChannel) {
+      const detail = err instanceof Error ? err.stack ?? err.message : String(err);
+      // Redact absolute filesystem paths before logging — Node.js fs errors include the
+      // failing path in the message (e.g. EACCES: /home/user/.claude/projects/…).
+      // VS Code output channels are shared and readable by all Extension Host code;
+      // minimising path exposure reduces information disclosure surface.
+      // Pattern requires at least one directory segment (slash+segment+slash) so short
+      // tokens like version strings '/3.3.2' or line references '/42' are NOT redacted.
+      // This preserves diagnostic detail while still stripping full filesystem paths.
+      // eslint-disable-next-line security/detect-unsafe-regex -- path-redaction: quantified group requires multi-segment paths; single-segment inputs cannot trigger ReDoS
+      const redacted = detail.replace(/\/(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]*/g, '<path>');
+      outputChannel.appendLine(`[export] writeFile failed: ${redacted}`);
+    }
+  }
+}
+
 function openEditorPanel(): void {
   if (editorPanel) { editorPanel.reveal(); return; }
   const panelDisposables: vscode.Disposable[] = [];
@@ -238,7 +346,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // and reactivate an extension without unloading the module (e.g. F5 in the
   // Extension Development Host). Without a reset, stale Webview and StatusBarItem
   // references from the prior session leak, causing ghost status-bar items and
-  // postMessage() calls to disposed webviews. TODO(M2): move into an activation-context object.
+  // postMessage() calls to disposed webviews. TODO(tech-debt): move into an activation-context object.
   latest = null;
   webviews.clear();
 
@@ -262,10 +370,17 @@ export function activate(context: vscode.ExtensionContext): void {
     statusItem.dispose();
     statusItem = null;
   }
+  if (outputChannel) {
+    outputChannel.dispose();
+    outputChannel = null;
+  }
 
   statusItem = vscode.window.createStatusBarItem('claudeWorkflow.status', vscode.StatusBarAlignment.Left, 100);
   statusItem.command = 'claudeWorkflow.focus';
   context.subscriptions.push(statusItem);
+
+  outputChannel = vscode.window.createOutputChannel('Claude Code Workflow Dashboard');
+  context.subscriptions.push(outputChannel);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('claudeWorkflow.dashboard', new DashboardViewProvider(context), {
@@ -281,6 +396,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.executeCommand('vscode.open', uri));
     }),
     vscode.commands.registerCommand('claudeWorkflow.selectRun', () => runSelectRun(context)),
+    vscode.commands.registerCommand('claudeWorkflow.exportMarkdown', () => runExportMarkdown()),
   );
 
   // Self-rescheduling setTimeout so refreshMs is re-read from settings on every

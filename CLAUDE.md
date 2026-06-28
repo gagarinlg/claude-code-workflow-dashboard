@@ -40,7 +40,8 @@ breadth). We differentiate on focus and signal, not surface area.
 - Pure data functions live under `src/data/`; the webview template in
   `src/webview/html.ts`. The host posts `{type:'snapshot', snap}` messages to the
   webview.
-- **vitest** unit tests under `test/`, with a 90 % coverage gate on `src/data/**` and `src/webview/**`.
+- Pure export functions (Markdown report generation) live under `src/export/`.
+- **vitest** unit tests under `test/`, with a 90 % coverage gate on `src/data/**`, `src/webview/**`, and `src/export/**`.
 - **ESLint** flat config (`eslint.config.mjs`, `typescript-eslint`).
 - No third-party runtime dependencies; only the `vscode` API + Node `fs/os/path`.
 - Engines: `vscode ^1.84.0`, `node >=18.0.0`.
@@ -53,16 +54,24 @@ src/data/discovery.ts     findWorkflowDir, listRecentRuns, formatRelativeTime.
 src/data/parse.ts         jload, firstUserText, deriveLabel, classify, agentStats, sevCounts.
 src/data/snapshot.ts      buildSnapshot + Snapshot types (mirrors docs/DATA-FORMAT.md).
 src/data/changed.ts       walkChanged.
-src/webview/html.ts       getHtml() template + inline client script.
+src/webview/html.ts       getHtml() assembler; imports and concatenates CSS + JS sub-modules.
+src/webview/css.ts        CSS + CSS_SIDEBAR constants (full-panel and sidebar styles).
+src/webview/js-panels.ts  JS_PANELS: panel render functions (overview, agents, findings, etc.).
+src/webview/js-sidebar.ts JS_SIDEBAR: compact sidebar render loop.
+src/webview/js-wire.ts    JS_WIRE: wire() event binding + render() call.
+src/export/markdown.ts    generateMarkdown() + buildExportFilename(): Markdown report generator. Pure, no disk I/O.
 dist/extension.js         Bundled output (esbuild, CommonJS). Shipped in VSIX; not in source control.
 build.mjs                 esbuild build script (production + --watch mode).
-vitest.config.ts          Vitest config; 90 % coverage gate on src/data/** and src/webview/**.
+vitest.config.ts          Vitest config; 90 % coverage gate on src/data/**, src/webview/**, and src/export/**.
 eslint.config.mjs         ESLint flat config (typescript-eslint).
 tsconfig.json             TypeScript strict config.
 scripts/typecheck.mjs     tsc --noEmit wrapper (TS18003 suppression is a now-dormant safety net; src/ always exists post-M0).
 test/                     Vitest unit tests (*.test.ts) + fixtures/ (wf_basic, wf_partial, base).
-                          Files: changed, defensive, discovery, extension-invariants, html, html-syntax, m0-acceptance, m1-pinned-run, parse, snapshot, snapshot-toctou.
-                          **Review scope note**: all 11 test files must be included in every review round.
+                          Files: changed, defensive, discovery, dogfooding-polish, erika-m2-polish-verification,
+                          erika-m2-verification, extension-invariants, html, html-syntax, m0-acceptance,
+                          m1-pinned-run, m2-agent-fold, m2-charts, m2-export, m2-metrics, m2-typed-results,
+                          parse, snapshot, snapshot-toctou.
+                          **Review scope note**: all 19 test files must be included in every review round.
                           extension-invariants.test.ts in particular covers FSWatcher cleanup on re-activation,
                           safeSnap workflowDir stripping, GPL-3.0-or-later license, command-id constraints,
                           and coverage gates — do not omit it from review scope.
@@ -148,7 +157,7 @@ npm run lint
 # Run unit tests once:
 npm test
 
-# Run tests with coverage report (90 % gate on src/data/** and src/webview/**):
+# Run tests with coverage report (90 % gate on src/data/**, src/webview/**, and src/export/**):
 npm run coverage
 
 # Package a VSIX locally (validates the manifest; triggers npm run build via vscode:prepublish):

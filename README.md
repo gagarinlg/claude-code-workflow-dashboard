@@ -32,6 +32,18 @@ active without any per-workflow setup.
   command (view-title icon or Command Palette). Default remains "Follow newest";
   selecting a run pins it per workspace. Choose **"Follow newest"** at the top
   of the picker to unpin.
+- **Export Run as Markdown** — the **Export** button (or **"Claude Workflow: Export Run as Markdown"**
+  command) saves the full run report — findings, verdicts, structured results, and agent metrics —
+  as a Markdown file. A **Save** dialog or **Copy to clipboard** option is offered.
+- **Per-agent token & tool-call metrics** — each agent card shows output tokens, input tokens
+  (when available), cache read/write tokens, tool-call counts, and finding counts in a compact
+  metrics bar.
+- **Charts panel** — a horizontal token-bar chart (per-agent output tokens) and a cumulative-token
+  trend sparkline. Visible as the **Charts** panel; toggle it from the top bar.
+- **Prompt disclosure** — click the **Prompt** toggle inside any agent card to read the agent's
+  opening system prompt, with a **Copy** button.
+- **Collapse all / Expand all** — a button in the Agents panel header collapses or expands every
+  agent card at once. Individual cards still fold/unfold independently.
 
 ## Getting started
 
@@ -83,7 +95,7 @@ For each run the dashboard reads:
   counts, the current-activity line, and the expandable output tail.
 
 Agent status is derived as **done** (a result was recorded), **live** (its
-transcript changed within the last 90 s), or **dead** (interrupted — no result
+transcript changed within the last 3 minutes (180 s)), or **dead** (interrupted — no result
 and no recent activity, e.g. after a stop/resume).
 
 Nothing is written; the extension only reads these files.
@@ -106,11 +118,11 @@ are published by the **Nightly** workflow. CI validates and packages every push.
 
 ## Roadmap & contributing
 
-The planned direction (TypeScript migration, metrics + charts, Markdown export,
-agent timeline/graph, robustness, broader distribution) is tracked in
-**[ROADMAP.md](ROADMAP.md)**. Project orientation for contributors lives in
-**[CLAUDE.md](CLAUDE.md)**, and the on-disk run format the dashboard reads is
-documented in **[docs/DATA-FORMAT.md](docs/DATA-FORMAT.md)**.
+The project tracks progress in **[ROADMAP.md](ROADMAP.md)**. M0–M2 (TypeScript
+migration, robustness, metrics + charts, Markdown export) are shipped; M3+ (agent
+timeline/graph, broader distribution) are in progress. Project orientation for
+contributors lives in **[CLAUDE.md](CLAUDE.md)**, and the on-disk run format the
+dashboard reads is documented in **[docs/DATA-FORMAT.md](docs/DATA-FORMAT.md)**.
 
 > This is an unofficial, community-built tool. It is **not affiliated with or
 > endorsed by Anthropic**.

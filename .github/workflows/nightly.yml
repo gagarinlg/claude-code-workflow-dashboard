@@ -76,7 +76,7 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         run: npm run build
 
-      - name: Test with coverage (90 % gate on src/data/** and src/webview/**)
+      - name: Test with coverage (90 % gate on src/data/**, src/webview/**, and src/export/**)
         if: steps.check.outputs.skip != 'true'
         run: npm run coverage
 

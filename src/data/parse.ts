@@ -68,6 +68,13 @@ export interface AgentStats {
   outTok: number;
   tools: number;
   tail: TailEntry[];
+  /** input_tokens summed across assistant turns — only present when the field
+   *  exists in at least one usage record; undefined otherwise (never 0-as-real). */
+  inTok?: number;
+  /** cache_creation_input_tokens summed — only present when field exists in transcript. */
+  cacheCreate?: number;
+  /** cache_read_input_tokens summed — only present when field exists in transcript. */
+  cacheRead?: number;
 }
 
 export interface ClassifyResult {
@@ -156,10 +163,10 @@ export const MAX_ROLE_RULE_RE_LEN = 500;
 // the Node.js event loop for the full duration before this guard fires.
 // The length cap (MAX_ROLE_RULE_RE_LEN) is the primary defence; this guard
 // is a trip-wire for patterns that slip past it, not a true deadline.
-// For a true deadline a worker_threads approach would be needed (TODO(M2)).
-// Deferred from M1: the structural ReDoS guard (REDOS_DANGER_RE) plus the
+// For a true deadline a worker_threads approach would be needed (TODO(tech-debt)).
+// Deferred from M2: the structural ReDoS guard (REDOS_DANGER_RE) plus the
 // length cap already block all known catastrophic patterns; worker_threads
-// isolation is a defence-in-depth improvement tracked in ROADMAP §M2.
+// isolation is a defence-in-depth improvement explicitly deferred from M2.
 // See the TOCTOU pattern in snapshot.ts for the analogous c8 ignore usage.
 const CLASSIFY_MATCH_TIMEOUT_MS = 50;
 
@@ -169,7 +176,7 @@ const CLASSIFY_MATCH_TIMEOUT_MS = 50;
 // and are rejected. The pattern covers capturing groups, non-capturing (?:…),
 // named (?<name>…), lookahead (?=…), and negative lookahead (?!…) prefixes.
 // This heuristic catches the common cases that slip past the length cap.
-// Note: this is a best-effort safety valve — worker_threads isolation (TODO(M2))
+// Note: this is a best-effort safety valve — worker_threads isolation (TODO(tech-debt))
 // is the correct long-term fix for user-supplied patterns. Coverage gaps remain
 // for exotic alternation forms like (a|a)+ — the elapsed-time check is the
 // secondary trip-wire for patterns that evade this structural guard.
@@ -213,6 +220,15 @@ export function agentStats(events: unknown[]): AgentStats {
   let outTok = 0;
   let tools = 0;
   const tail: TailEntry[] = [];
+  // Optional token fields — only accumulated when the field is present in at
+  // least one usage record. Using undefined-accumulation (not 0) ensures that
+  // an agent whose transcript has no input_tokens field never reports 0 as if
+  // it were a real measurement. The first numeric occurrence initialises the
+  // accumulator; subsequent ones add to it.
+  let inTok: number | undefined;
+  let cacheCreate: number | undefined;
+  let cacheRead: number | undefined;
+
   for (const o of events) {
     if (o == null || typeof o !== 'object') continue;
     const obj = o as Record<string, unknown>;
@@ -224,6 +240,10 @@ export function agentStats(events: unknown[]): AgentStats {
     if (usage && typeof usage === 'object') {
       const u = usage as Record<string, unknown>;
       if (typeof u['output_tokens'] === 'number') outTok += u['output_tokens'] as number;
+      // Optional fields: guard typeof strictly — absent fields must stay undefined.
+      if (typeof u['input_tokens'] === 'number') inTok = (inTok ?? 0) + (u['input_tokens'] as number);
+      if (typeof u['cache_creation_input_tokens'] === 'number') cacheCreate = (cacheCreate ?? 0) + (u['cache_creation_input_tokens'] as number);
+      if (typeof u['cache_read_input_tokens'] === 'number') cacheRead = (cacheRead ?? 0) + (u['cache_read_input_tokens'] as number);
     }
     const content = msg['content'];
     for (const b of Array.isArray(content) ? content : []) {
@@ -235,13 +255,18 @@ export function agentStats(events: unknown[]): AgentStats {
         try {
           inp = JSON.stringify(block['input']).slice(0, 180);
         } catch {}
-        tail.push({ kind: 'tool', text: `[${block['name'] as string}] ${inp}` });
+        const toolName = typeof block['name'] === 'string' ? block['name'] : '(unknown)';
+        tail.push({ kind: 'tool', text: `[${toolName}] ${inp}` });
       } else if (block['type'] === 'text' && (typeof block['text'] === 'string') && (block['text'] as string).trim()) {
         tail.push({ kind: 'text', text: (block['text'] as string).trim() });
       }
     }
   }
-  return { outTok, tools, tail: tail.slice(-30) };
+  const result: AgentStats = { outTok, tools, tail: tail.slice(-30) };
+  if (inTok !== undefined) result.inTok = inTok;
+  if (cacheCreate !== undefined) result.cacheCreate = cacheCreate;
+  if (cacheRead !== undefined) result.cacheRead = cacheRead;
+  return result;
 }
 
 export function sevCounts(findings: unknown[]): Record<string, number> {

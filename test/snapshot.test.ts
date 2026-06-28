@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { buildSnapshot } from '../src/data/snapshot';
+import { buildSnapshot, MAX_PROMPT_CHARS } from '../src/data/snapshot';
 import { DEFAULT_ROLE_RULES, STALE_SECS } from '../src/data/parse';
 import type { Cfg, SnapshotOk } from '../src/data/snapshot';
 
@@ -570,5 +570,140 @@ describe('buildSnapshot — explicit stale/live agent detection', () => {
     const agent = result.agents.find((a) => a.id === 'stale-agent');
     expect(agent).toBeDefined();
     expect(agent!.status).toBe('run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M2-AgentPrompt: full initiating prompt carried per agent in buildSnapshot
+// ---------------------------------------------------------------------------
+describe('buildSnapshot — M2-AgentPrompt: prompt field per agent', () => {
+  let tmpBase: string;
+  let wfDir: string;
+
+  const makeCfg = (base: string): Cfg => ({
+    base,
+    repo: '',
+    refreshMs: 4000,
+    statusBar: true,
+    roleRules: DEFAULT_ROLE_RULES,
+  });
+
+  beforeEach(() => {
+    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'snap-prompt-'));
+    wfDir = path.join(tmpBase, 'workflows', 'wf_prompt_test');
+    fs.mkdirSync(wfDir, { recursive: true });
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), '');
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(tmpBase, { recursive: true, force: true }); } catch {}
+  });
+
+  it('agent.prompt carries the full first user message text', () => {
+    const promptText = 'You are a senior developer. Fix all the issues.';
+    fs.writeFileSync(
+      path.join(wfDir, 'agent-p1.jsonl'),
+      `{"type":"user","message":{"content":"${promptText}"}}\n` +
+      `{"type":"assistant","message":{"content":[{"type":"text","text":"done"}],"usage":{"output_tokens":10}}}\n`,
+    );
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const agent = result.agents.find((a) => a.id === 'p1');
+    expect(agent).toBeDefined();
+    expect(agent!.prompt).toBe(promptText);
+  });
+
+  it('agent.prompt is absent when the transcript has no user event', () => {
+    // A transcript with only an assistant turn — no user event, no prompt.
+    fs.writeFileSync(
+      path.join(wfDir, 'agent-noprompt.jsonl'),
+      `{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}],"usage":{"output_tokens":5}}}\n`,
+    );
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const agent = result.agents.find((a) => a.id === 'noprompt');
+    if (!agent) return; // transcript may have too few events to register — acceptable
+    expect(agent.prompt).toBeUndefined();
+  });
+
+  it('agent.prompt is capped at MAX_PROMPT_CHARS for very large prompts', () => {
+    // Build a prompt longer than MAX_PROMPT_CHARS by repeating a string.
+    const longPrompt = 'A'.repeat(MAX_PROMPT_CHARS + 500);
+    fs.writeFileSync(
+      path.join(wfDir, 'agent-long.jsonl'),
+      `{"type":"user","message":{"content":"${longPrompt}"}}\n` +
+      `{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}],"usage":{"output_tokens":5}}}\n`,
+    );
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const agent = result.agents.find((a) => a.id === 'long');
+    expect(agent).toBeDefined();
+    expect(agent!.prompt).toBeDefined();
+    expect(agent!.prompt!.length).toBeLessThanOrEqual(MAX_PROMPT_CHARS);
+    // The cap must preserve the beginning of the prompt.
+    expect(agent!.prompt!.startsWith('A')).toBe(true);
+  });
+
+  it('agent.prompt is the text content from an array-style user message', () => {
+    // The transcript format sometimes uses content as an array of blocks.
+    const promptText = 'You are a code reviewer. Review the diff.';
+    const transcript = JSON.stringify({
+      type: 'user',
+      message: { content: [{ type: 'text', text: promptText }] },
+    }) + '\n' +
+    `{"type":"assistant","message":{"content":[{"type":"text","text":"reviewed"}],"usage":{"output_tokens":8}}}\n`;
+    fs.writeFileSync(path.join(wfDir, 'agent-arr.jsonl'), transcript);
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const agent = result.agents.find((a) => a.id === 'arr');
+    expect(agent).toBeDefined();
+    expect(agent!.prompt).toBe(promptText);
+  });
+
+  it('buildSnapshot does not throw when prompt extraction fails gracefully', () => {
+    // Malformed transcript — prompt extraction should degrade, not throw.
+    fs.writeFileSync(
+      path.join(wfDir, 'agent-mal.jsonl'),
+      `{"type":"user","message":{}}\n` +
+      `{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}],"usage":{"output_tokens":3}}}\n`,
+    );
+    expect(() => buildSnapshot(makeCfg(tmpBase))).not.toThrow();
+  });
+
+  it('wf_basic agents carry their prompt field from the fixture transcripts', () => {
+    // Copy wf_basic into a proper discovery tree and verify prompt fields appear.
+    const wfBasicSrc = path.join(__dirname, 'fixtures', 'wf_basic');
+    const wfDir2 = path.join(tmpBase, 'workflows', 'wf_basic_prompt_copy');
+    fs.mkdirSync(wfDir2, { recursive: true });
+    for (const f of fs.readdirSync(wfBasicSrc)) {
+      fs.copyFileSync(path.join(wfBasicSrc, f), path.join(wfDir2, f));
+    }
+    const now = new Date();
+    fs.utimesSync(wfDir2, now, now);
+
+    // Remove the empty placeholder wf_dir created in beforeEach so it doesn't
+    // compete for "newest" — fs discovery picks the highest-mtime wf_* dir.
+    fs.rmSync(wfDir, { recursive: true, force: true });
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // agent-aaa has "SENIOR FULL-STACK DEVELOPER fixing all findings" as its first user msg.
+    const aaa = result.agents.find((a) => a.id === 'aaa');
+    expect(aaa).toBeDefined();
+    expect(typeof aaa!.prompt).toBe('string');
+    expect(aaa!.prompt!.length).toBeGreaterThan(0);
+    expect(aaa!.prompt).toContain('SENIOR FULL-STACK DEVELOPER');
+
+    // Every agent that appears should have a non-empty prompt (all wf_basic agents have user events).
+    for (const a of result.agents) {
+      expect(typeof a.prompt).toBe('string');
+      expect(a.prompt!.length).toBeGreaterThan(0);
+    }
   });
 });

@@ -118,23 +118,41 @@ as Implement/Fix — never a generic "reviewer"); one review round shows one pas
 
 ---
 
-## M2 — Metrics + Markdown export  ⬅ START HERE
+## ✅ M2 — Metrics + Markdown export  (DONE)
 
 *Goal: quantify a run and get it out of the editor. **No pricing.***
 
-- [ ] **Metrics surfacing:** make per-agent and total **token** + **tool-call**
+- [x] **Metrics surfacing:** make per-agent and total **token** + **tool-call**
       counts first-class in the loop header and agent cards. Add `input_tokens` and
       cache token fields **only if present** (guard hard; see docs/DATA-FORMAT.md).
-- [ ] **Charts:** lightweight, dependency-free SVG (no chart lib): a per-agent
+- [x] **Charts:** lightweight, dependency-free SVG (no chart lib): a per-agent
       output-token bar chart and a tokens-over-phases/time mini trend. Theme-native
       colors. Must render fine with 1 agent and with 50.
-- [ ] **Export run as Markdown** (`claudeWorkflow.exportMarkdown`): a single report
+- [x] **Export run as Markdown** (`claudeWorkflow.exportMarkdown`): a single report
       with run id/time, loop summary + severity breakdown, findings grouped by
       reviewer (severity, title, why, fix), verdicts, structured results, and a
       per-agent metrics table. Offer **Save to file** and **Copy to clipboard**.
-- [ ] Snapshot already carries everything needed — build the report from `latest`,
+- [x] **Visible Export buttons in BOTH webviews (M2-Export-UI):** a prominent, clearly
+      labelled **"Export ⭳ / Export Markdown"** button in the editor `#bar` (next to
+      Guide/Refresh/Runs) AND in the compact sidebar header — posting `{type:'export'}`
+      to the host, which runs `claudeWorkflow.exportMarkdown` (extend the
+      `onDidReceiveMessage` switch, same pattern as the M1 run-picker button). Don't
+      rely solely on the command palette / `view/title` menu (the editor panel has no
+      title menu). Theme-native; `addEventListener` (nonce-safe); `aria-label` + tooltip.
+      `getHtml` tests assert the button exists in both modes and posts `{type:'export'}`.
+- [x] **Smart default export filename (M2-Export-Name):** the Save dialog must
+      pre-fill a sensible, filesystem-safe default derived from the `latest` snapshot —
+      no manual typing. Proposed algorithm: `claude-workflow-<runId>-<YYYYMMDD-HHmm>.md`,
+      where `runId` is the snapshot's run id (already `wf_*`-safe) and the timestamp
+      comes from the run's latest activity (`updatedAt`/mtime), falling back to export
+      time; then sanitise to `[A-Za-z0-9._-]` (replace path separators/colons/spaces
+      with `-`, collapse repeats, cap length ~120). Default the save location to the
+      first workspace folder. Unit-test the name builder: deterministic for a fixed
+      snapshot, always `.md`, never contains `/ \\ : *` or whitespace, and stays within
+      the length cap.
+- [x] Snapshot already carries everything needed — build the report from `latest`,
       don't re-read disk.
-- [ ] **View full agent prompt (M2-AgentPrompt):** surface each agent's complete
+- [x] **View full agent prompt (M2-AgentPrompt):** surface each agent's complete
       initiating prompt (its first user message / instructions) in the agent card —
       a **"Prompt"** disclosure alongside the existing output / findings / activity
       tail. `firstUserText` (`src/data/parse.ts`) already extracts this text for
@@ -147,7 +165,7 @@ as Implement/Fix — never a generic "reviewer"); one review round shows one pas
       (`--vscode-*`); fold state persists with M2-AgentFold. Add a `buildSnapshot`
       test asserting the prompt is carried and a `getHtml` test asserting the
       disclosure renders and is escaped.
-- [ ] **Typed result displays for every agent type (M2-TypedResults):** today only
+- [x] **Typed result displays for every agent type (M2-TypedResults):** today only
       reviewers get a rich rendering (the findings panel — severity / title / why /
       fix); every other agent's structured output falls back to a raw-JSON `<pre>` in
       the Results panel and agent card (`agentSub()` / `resultsPanel()` in
@@ -162,6 +180,52 @@ as Implement/Fix — never a generic "reviewer"); one review round shows one pas
       render from `latest`, don't re-read disk; `esc()` every transcript-derived value;
       theme-native (`--vscode-*`). Add a `getHtml` test per known shape and one for the
       fallback.
+      - **Raw data goes BELOW the analyzed view, collapsed by default** (dogfooding):
+        render the typed/structured view first; put the raw JSON in a collapsed
+        `<details>`-style disclosure *beneath* it — never the raw `<pre>` as the primary
+        display.
+      - **Implementer result shape (observed):** `result` is
+        `{ summary: <markdown string>, filesChanged: string[], testsRun: bool, fixed: number }`.
+        Header from the structured fields (e.g. "N files changed · tests ✓ · M fixed" + the
+        files-changed list). The `summary` markdown follows a stable section structure —
+        `## Implementation: <task>` then `### What Was Built` / `### Files Changed` (a
+        `| File | Change |` table) / `### Decisions Made` / `### Test Results` /
+        `### Status` (COMPLETE→green badge). Parse these `###` sections into a readable
+        layout WHEN present, but **degrade gracefully** (show `summary` as plain text)
+        when the headings are absent or malformed — **must never throw on shape mismatch**
+        (defensive parsing rule). Add a test feeding a non-conforming summary asserting it
+        renders as text without error.
+- [ ] **Generic field-driven result renderer (M2-TypedResults-Generic):** rebuild
+      `renderTypedResult` to be driven by the result's **fields**, not a per-`agentType`
+      switch, so it works for every current agent AND any future/variant agent. Empirical
+      result shapes (from the actual run journals the dashboard consumes):
+      - reviewers (architect / code-reviewer / security-reviewer / uiux-reviewer):
+        `{ verdict: string, findings: {severity,title,location,why,fix,category}[] }`
+      - implementer: `{ summary: <md>, filesChanged: string[], testsRun: bool, fixed: number }`
+      - test-verifier: `{ buildOk, lintOk, testsOk: bool, failures: any[], summary: string }`
+
+      Render by **field pattern** (agentType only a label hint): `verdict`→status badge
+      (APPROVED→ok; `*WORK*`/FAIL/REJECT→bad; else neutral); `findings[]`→reuse the
+      severity-sorted findings rendering; `summary`→`##`/`###` section parse (What Was
+      Built / Files Changed table / Test Results / Status→badge) when structured else
+      plain text; `filesChanged[]`→file list w/ count; boolean flags matching
+      `/Ok$|^testsRun$|passed/`→✓/✗ chips; `failures`/`gaps[]`→list (empty→"none");
+      numeric counts→labeled; **every other/unknown key→a generic value renderer**
+      (string/number/bool/array/nested-object → key-value table, NEVER a bare JSON dump).
+      Raw JSON in a collapsed `<details>` below. **Wrap the whole renderer in try/catch —
+      on ANY error, fall back to collapsed raw text and FAIL SILENTLY** (never throw into
+      the webview). `esc()` every value; theme-native. Tests: each known shape renders its
+      typed view; an unknown-agentType/extra-fields object renders via the generic
+      key-value fallback; a malformed/throwing input falls back silently without error.
+- [x] **Reduce vertical sprawl / information architecture (M2-Layout):** Results panel
+      hidden by default and moved to end of PANELS; Collapse-all / Expand-all button
+      with dynamic label; card fold state persists.
+- [x] **Demote the standalone Results (structured-results) panel (M2-Layout sub-item):**
+      hidden by default (`results:0`); typed renderers in agent cards are the primary view.
+      Per-panel toggle retained.
+- [x] **Chart contrast across themes (M2-Charts follow-up):** chart fills use
+      `--vscode-charts-*` (with hex fallbacks); `@media (forced-colors:active)` covers
+      chart bar rects and trend paths.
 
 **Acceptance:** counts match a hand-check of a sample run; charts render across
 1..N agents; the exported Markdown round-trips into a GitHub issue/PR cleanly and
@@ -183,10 +247,41 @@ output renders in a tailored, readable view (with a generic fallback) — never 
       Keep layout simple (layered by phase/start order); this is the lower-priority
       half of "Both" — ship the timeline first, graph second.
 - [ ] Panel toggles + remembered layout state, consistent with existing panels.
+- [ ] **M3-tech-debt: Shared walkWfDirs with 2-second cache.** `listRecentRuns` and
+      `findWorkflowDir` in `src/data/discovery.ts` independently traverse the same
+      directory tree on every polling tick (default 4 s) and on every file-system
+      change event. Extract a shared `walkWfDirs(base)` that both call, backed by a
+      2-second in-memory cache. `findWorkflowDir` becomes a first-element projection;
+      both are O(1) for burst calls within the cache window. Estimated: 30 min.
+      _(Tracked here from code TODO(M3-tech-debt) comment — do not defer beyond M3.)_
+- [ ] **M3-tech-debt: Activation-context object in extension.ts.** The eleven
+      module-level mutable variables (`latest`, `webviews`, `statusItem`, `watcher`,
+      `watchedDir`, `editorPanel`, `outputChannel`, `pinnedDir`, `PINNED_RUN_KEY` and
+      the timer inside `activate`) form an implicit shared-state object. Wrap them all
+      into an activation-context object created fresh in each `activate()` call and
+      passed explicitly to all inner functions. `deactivate()` receives or closes over
+      the context. This eliminates the stale-reference hazard, makes `activate()` a
+      pure factory, and enables future unit tests without VS Code mocking. Do not defer
+      beyond M3 — M4 will add more state. Estimated: 2–3 h.
+      _(Tracked here from code TODO(tech-debt) comments — mandatory M3 item.)_
+- [ ] **Detect superseded / retried agents (M3-Superseded):** when the Workflow engine
+      retries a stalled agent it spawns a NEW agent for the same role/round while the
+      original stays `started` with no result — a zombie. Today both render as "running"
+      (and the zombie only flips to "Stalled" after `STALE_SECS`), so the live count and
+      timeline overstate concurrency (observed: two identical "viktor review round 2"
+      agents at once). Detect the superseded original — same `agentType` + same review
+      round/pass (or identical first-prompt key), older `start`, no result, shadowed by a
+      newer same-key agent — and mark it distinctly (a "superseded"/"stalled" status,
+      excluded from the live count) instead of "running". Heuristic + defensive: the
+      journal does NOT explicitly mark retries, so never mis-flag a legitimately parallel
+      cohort (e.g. real fan-out of the same role). On the timeline, group/collapse
+      superseded attempts under the surviving agent's lane. Unit-test the supersede
+      detection in `buildSnapshot` against a fixture with a zombie + its retry.
 
 **Acceptance:** timeline accurately reflects start/elapsed/status for a live run
 and updates on refresh without losing scroll position; graph (if shipped) lays out
-without overlap for a typical fan-out.
+without overlap for a typical fan-out; a retried/zombie agent is shown as
+superseded/stalled (not counted as live), without mis-flagging genuine parallel cohorts.
 
 ---
 

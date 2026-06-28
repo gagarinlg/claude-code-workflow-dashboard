@@ -400,6 +400,97 @@ describe('agentStats', () => {
     expect(stats.tools).toBe(1);
     expect(stats.tail[0]?.text).toBe('[Bash] ');
   });
+
+  // ---------------------------------------------------------------------------
+  // M2-Metrics: optional token fields (input_tokens, cache_*)
+  // ---------------------------------------------------------------------------
+  it('collects inTok when input_tokens is present', () => {
+    const events = [
+      { type: 'assistant', message: { usage: { output_tokens: 50, input_tokens: 200 }, content: [] } },
+      { type: 'assistant', message: { usage: { output_tokens: 30, input_tokens: 100 }, content: [] } },
+    ];
+    const stats = agentStats(events);
+    expect(stats.inTok).toBe(300);
+    expect(stats.outTok).toBe(80);
+  });
+
+  it('collects cacheCreate when cache_creation_input_tokens is present', () => {
+    const events = [
+      { type: 'assistant', message: { usage: { output_tokens: 10, cache_creation_input_tokens: 500 }, content: [] } },
+    ];
+    const stats = agentStats(events);
+    expect(stats.cacheCreate).toBe(500);
+  });
+
+  it('collects cacheRead when cache_read_input_tokens is present', () => {
+    const events = [
+      { type: 'assistant', message: { usage: { output_tokens: 10, cache_read_input_tokens: 1200 }, content: [] } },
+      { type: 'assistant', message: { usage: { output_tokens: 10, cache_read_input_tokens: 800 }, content: [] } },
+    ];
+    const stats = agentStats(events);
+    expect(stats.cacheRead).toBe(2000);
+  });
+
+  it('returns inTok=undefined when input_tokens is absent — never 0-as-real', () => {
+    const events = [
+      { type: 'assistant', message: { usage: { output_tokens: 100 }, content: [] } },
+    ];
+    const stats = agentStats(events);
+    expect(stats.inTok).toBeUndefined();
+    expect(stats.cacheCreate).toBeUndefined();
+    expect(stats.cacheRead).toBeUndefined();
+  });
+
+  it('returns inTok=undefined when no usage block exists at all', () => {
+    const events = [
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } },
+    ];
+    const stats = agentStats(events);
+    expect(stats.inTok).toBeUndefined();
+    expect(stats.outTok).toBe(0);
+  });
+
+  it('handles mixed turns: some with input_tokens, some without — accumulates only present ones', () => {
+    const events = [
+      { type: 'assistant', message: { usage: { output_tokens: 50 }, content: [] } },            // no inTok
+      { type: 'assistant', message: { usage: { output_tokens: 30, input_tokens: 150 }, content: [] } }, // has inTok
+    ];
+    const stats = agentStats(events);
+    // inTok is defined (at least one turn had it); it accumulates only the present value
+    expect(stats.inTok).toBe(150);
+    expect(stats.outTok).toBe(80);
+  });
+
+  it('collects all three optional fields together', () => {
+    const events = [
+      {
+        type: 'assistant',
+        message: {
+          usage: {
+            output_tokens: 100,
+            input_tokens: 400,
+            cache_creation_input_tokens: 200,
+            cache_read_input_tokens: 600,
+          },
+          content: [],
+        },
+      },
+    ];
+    const stats = agentStats(events);
+    expect(stats.outTok).toBe(100);
+    expect(stats.inTok).toBe(400);
+    expect(stats.cacheCreate).toBe(200);
+    expect(stats.cacheRead).toBe(600);
+  });
+
+  it('ignores non-numeric input_tokens (e.g. string) — field stays undefined', () => {
+    const events = [
+      { type: 'assistant', message: { usage: { output_tokens: 50, input_tokens: 'not-a-number' }, content: [] } },
+    ];
+    const stats = agentStats(events);
+    expect(stats.inTok).toBeUndefined();
+    expect(stats.outTok).toBe(50);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -262,6 +262,13 @@ describe('ci.yml — M0-T5 workflow correctness', () => {
   it('ci.yml uses cache: npm for npm install caching (R2-D5)', () => {
     expect(ci).toContain('cache: npm');
   });
+
+  it('ci.yml coverage step description mentions src/export/** (Gerda MED §CC — gate scope parity)', () => {
+    // The step description must name all three gated paths so CI readers know
+    // the gate covers src/export/** as well as src/data/** and src/webview/**.
+    // vitest.config.ts already includes 'src/export/**'; the step name must match.
+    expect(ci).toContain('src/export/**');
+  });
 });
 
 describe('release.yml — M0-T5 workflow correctness', () => {
@@ -501,6 +508,10 @@ describe('vitest.config.ts — coverage gate', () => {
   it('vitest.config.ts covers src/data/** and src/webview/**', () => {
     expect(vitestConfig).toContain("'src/data/**'");
     expect(vitestConfig).toContain("'src/webview/**'");
+  });
+
+  it('vitest.config.ts covers src/export/**', () => {
+    expect(vitestConfig).toContain("'src/export/**'");
   });
 
   it('vitest.config.ts has 90% line threshold', () => {

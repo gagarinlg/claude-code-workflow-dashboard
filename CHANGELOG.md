@@ -1,5 +1,71 @@
 # Change Log
 
+## [0.7.0] — 2026-06-28
+
+### M2-Metrics
+
+- **Per-agent token + tool-call metrics bar** in every agent card (output tokens,
+  tool-call count; optional input/cache token fields rendered only when present).
+- **Loop header optional KPIs:** `inTok`, `cacheRead`, `cacheCreate` appear in the
+  Overview panel only when the snapshot carries them.
+
+### M2-Charts
+
+- **Charts panel** (new, after Changed files): per-agent output-token **horizontal
+  bar chart** (capped at 50 bars; scrollable) and a **cumulative token trend
+  sparkline** (up to 200 points). Both use `--vscode-charts-*` theme variables with
+  `@media (forced-colors:active)` overrides. Zero external dependencies.
+
+### M2-Export
+
+- **`claudeWorkflow.exportMarkdown` command** — generates a complete Markdown report
+  from the current in-memory snapshot: run id/time, loop summary + severity
+  breakdown, findings grouped by reviewer, verdicts, structured results, and an
+  agent metrics table. Offers **Save to file** and **Copy to clipboard** actions.
+- **Export button** in both the editor `#bar` and the sidebar header, posting
+  `{type:'export'}` via the existing IPC bridge.
+- **Smart default filename** (`buildExportFilename`): the Save dialog pre-fills
+  `claude-workflow-<sanitisedRunId>-<YYYYMMDD-HHmm>.md` — sanitised to
+  `[A-Za-z0-9._-]`, length-capped at 120 chars, deterministic per minute.
+- **Heading injection guard** (`escHeading`): all transcript-derived values used in
+  Markdown headings are stripped of embedded newlines before emission, preventing
+  crafted labels from forging fake sections in exported reports.
+
+### M2-AgentPrompt
+
+- **Agent prompt disclosure** in each agent card: the agent's full initiating prompt
+  is shown in a collapsible `<details>`-style section with a **Copy** button (posts
+  `{type:'copyText'}` to the host, which writes to the VS Code clipboard). Fold state
+  persists alongside card fold state. Prompt capped at `MAX_PROMPT_CHARS` in
+  `buildSnapshot` to prevent unbounded memory use.
+
+### M2-AgentFold
+
+- **Card fold/unfold chevron** on every agent card. `run` agents default to expanded;
+  `done`/`dead` agents default to collapsed. Fold state persists via `api.setState`.
+- **Collapse all / Expand all** button (rendered when ≥ 2 agents). Initial label
+  reflects current state; label updates after each toggle.
+
+### M2-TypedResults
+
+- **Typed result renderers** for known agent types (keyed off `agentType`):
+  - `implementer`: files-changed list, summary, tests-run / fixed counts.
+  - `test-verifier`: pass/fail, coverage gaps.
+  - `judge`: verdict, score, rationale.
+  - `completeness-critic`: gaps list.
+  - **Generic fallback**: key/value table for unknown types; never a bare JSON dump.
+- **Results panel hidden by default** (shown at the end of PANELS) — typed renderers
+  in agent cards make it largely redundant; power users can re-enable via the toggle.
+
+### Bug fixes and polish
+
+- `fmtT()` now returns `&lt;1s` (was `<1s`, which the browser parsed as a malformed
+  tag, silently dropping the value for sub-second agents).
+- All `.onclick` property assignments in `wire()` replaced with `addEventListener`
+  for consistency and to match the stated CSP-safe wiring convention.
+- Inline styles for the pinned-run badge and the Results panel scroll container
+  extracted to named CSS classes (`.pinned-badge`, `.sb-pinned-badge`, `.result-body`).
+
 ## [0.6.0] — 2026-06-28
 
 ### M1-Naming

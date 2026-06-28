@@ -219,9 +219,10 @@ describe('getHtml', () => {
 
   it('JS contains null-guarded getElementById wiring for emptyRefresh and emptyGuide', () => {
     const html = getHtml(TEST_NONCE);
-    // The null-guarded patterns: var er=...; if(er)er.onclick=... and var eg=...; if(eg)eg.onclick=...
-    expect(html).toContain('if(er)er.onclick');
-    expect(html).toContain('if(eg)eg.onclick');
+    // Null-guarded addEventListener wiring (CSP-safe convention; .onclick is banned):
+    //   var er=...; if(er)er.addEventListener('click',...) and similarly for eg.
+    expect(html).toContain('if(er)er.addEventListener');
+    expect(html).toContain('if(eg)eg.addEventListener');
   });
 
   // -------------------------------------------------------------------------
@@ -564,8 +565,10 @@ describe('M1-SidebarUX — sidebar mode', () => {
       path.join(__dirname, '..', 'src', 'extension.ts'),
       'utf8',
     );
-    // The DashboardViewProvider must call attachWebview with 'sidebar'
-    expect(src).toContain("attachWebview(view.webview, this.ctx.subscriptions, 'sidebar')");
+    // The DashboardViewProvider must call attachWebview with 'sidebar'.
+    // F13 (round-5): uses view-scoped viewDisposables instead of ctx.subscriptions
+    // to prevent disposable leaks on repeated resolveWebviewView() calls.
+    expect(src).toContain("attachWebview(view.webview, viewDisposables, 'sidebar')");
   });
 
   it('extension.ts onDidReceiveMessage handles openFull type by executing claudeWorkflow.open', () => {
@@ -630,10 +633,11 @@ describe('M1-SidebarUX — sidebar mode', () => {
     const lines = sidebarJs.split('\n');
     const badgeLine = lines.find((l) => l.includes("badges+='<span class=\"sev '"));
     if (!badgeLine) throw new Error('sidebar badge builder line not found');
-    // Build a minimal evaluable harness: define esc, escCls, sevTotals, badges, then the loop body.
+    // Build a minimal evaluable harness: define esc, escCls, safeN, sevTotals, badges, then the loop body.
     const harness = `
       function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
       function escCls(s){return esc(s).replace(/[\\t\\n\\r ]+/g,'_');}
+      function safeN(n){var v=+n;return isFinite(v)?v:0;}
       var sevTotals=Object.create(null);
       sevTotals['HIGH MEDIUM']=3;
       var badges='';
@@ -998,5 +1002,580 @@ describe('Round-3 fixes', () => {
   it('sidebar JS wires select-run buttons posting type:selectRun', () => {
     const html = getHtml(TEST_NONCE, 2, 200, 'sidebar');
     expect(html).toContain("type:'selectRun'");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M2-AgentPrompt: Prompt disclosure rendering and escaping in getHtml()
+// ---------------------------------------------------------------------------
+describe('M2-AgentPrompt — Prompt disclosure in agent cards', () => {
+  function getPanelJs(html: string): string {
+    const scriptOpen = `<script nonce="${TEST_NONCE}">`;
+    const scriptClose = '</script>';
+    const s = html.indexOf(scriptOpen);
+    const e = html.lastIndexOf(scriptClose);
+    return html.slice(s + scriptOpen.length, e);
+  }
+
+  // -------------------------------------------------------------------------
+  // CSS: the .prompt-disc class must be defined so the disclosure is styled.
+  // -------------------------------------------------------------------------
+  it('CSS contains .prompt-disc rule', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.prompt-disc{');
+  });
+
+  it('CSS contains .prompt-pre rule with max-height and overflow:auto for scroll cap', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.prompt-pre{');
+    expect(html).toContain('max-height:');
+    expect(html).toContain('overflow:auto');
+  });
+
+  it('CSS .prompt-pre uses --vscode-* variables (theme-native)', () => {
+    const html = getHtml(TEST_NONCE);
+    const cssStart = html.indexOf('.prompt-pre{');
+    const cssEnd = html.indexOf('}', cssStart);
+    const rule = html.slice(cssStart, cssEnd);
+    expect(rule).toContain('--vscode-');
+  });
+
+  // -------------------------------------------------------------------------
+  // JS: agentsPanel() renders a .prompt-disc element when a.prompt is truthy.
+  // -------------------------------------------------------------------------
+  it('JS agentsPanel renders prompt-disc element keyed on a.prompt', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('a.prompt');
+    expect(js).toContain('prompt-disc');
+  });
+
+  it('JS agentsPanel uses esc(a.prompt) before injecting prompt text (XSS prevention)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('esc(a.prompt)');
+  });
+
+  it('JS agentsPanel uses esc(a.id) for data-paid attribute on prompt-disc (XSS prevention)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // data-paid carries the agent id for Copy wiring — must be esc()'d.
+    expect(js).toContain('data-paid="');
+    expect(js).toContain('esc(a.id)');
+  });
+
+  it('JS agentsPanel renders a Copy button with data-pcopied attribute', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('prompt-copy-btn');
+    expect(js).toContain('data-pcopied=');
+  });
+
+  // -------------------------------------------------------------------------
+  // JS: wire() wires the Copy button to postMessage({type:'copyText', text}).
+  // -------------------------------------------------------------------------
+  it('JS wire() wires .prompt-copy-btn via addEventListener (nonce-safe)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('.prompt-copy-btn');
+    expect(js).toContain("addEventListener('click'");
+    // No inline onclick on the copy button — blocked by CSP
+    expect(js).not.toContain('prompt-copy-btn" onclick');
+  });
+
+  it('JS wire() postMessage uses type:"copyText" for the Copy button', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain("type:'copyText'");
+  });
+
+  // -------------------------------------------------------------------------
+  // JS: openPrompt fold-state initialised and pruned alongside openAgents.
+  // -------------------------------------------------------------------------
+  it('JS state includes openPrompt object (keyed by agent id)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('openPrompt');
+  });
+
+  it('JS state prune block also prunes stale openPrompt keys', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The pruning must filter openPrompt by live agent ids — same pattern as openAgents.
+    expect(js).toContain('state.openPrompt=Object.fromEntries');
+  });
+
+  // -------------------------------------------------------------------------
+  // JS: prompt disclosure toggle persists open/closed state via save().
+  // -------------------------------------------------------------------------
+  it('JS wire() toggles open CSS class on .prompt-disc and persists via save()', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('prompt-disc');
+    expect(js).toContain('state.openPrompt[id]');
+    expect(js).toContain('save()');
+  });
+
+  it('JS wire() prompt disclosure toggle updates aria-expanded on header', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The toggle must set aria-expanded so screen readers announce open/closed state.
+    expect(js).toContain("setAttribute('aria-expanded'");
+  });
+
+  // -------------------------------------------------------------------------
+  // XSS: actually exercise esc() against a crafted prompt payload.
+  // -------------------------------------------------------------------------
+  it('esc() applied to a crafted prompt escapes angle brackets (HTML-injection prevention)', () => {
+    const esc = extractEscFn(getHtml(TEST_NONCE));
+    const malicious = '<script>alert("xss")</script>';
+    const escaped = esc(malicious);
+    expect(escaped).not.toContain('<script>');
+    expect(escaped).toContain('&lt;script&gt;');
+  });
+
+  it('esc() applied to a crafted prompt escapes double quotes (attribute breakout prevention)', () => {
+    const esc = extractEscFn(getHtml(TEST_NONCE));
+    const malicious = 'before"class="injected';
+    expect(esc(malicious)).toContain('&quot;');
+    expect(esc(malicious)).not.toContain('"class=');
+  });
+
+  // -------------------------------------------------------------------------
+  // Structural: the disclosure chevron has aria-hidden="true" (decorative).
+  // -------------------------------------------------------------------------
+  it('JS prompt-disc-chevron span has aria-hidden="true"', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('aria-hidden="true"');
+    expect(js).toContain('prompt-disc-chevron');
+  });
+
+  // -------------------------------------------------------------------------
+  // Disclosure fold state keyed by id: the prompt-disc element carries data-paid.
+  // wire() reads pd.dataset.paid to look up the agent id for state.openPrompt.
+  // -------------------------------------------------------------------------
+  it('JS wire() reads dataset.paid from .prompt-disc for state.openPrompt key', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('dataset.paid');
+    expect(js).toContain('state.openPrompt[id]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sabine HIGH/MED accessibility fixes (WCAG 1.4.1, 4.1.2, plus UX fixes)
+// ---------------------------------------------------------------------------
+describe('Accessibility fixes — Sabine HIGH/MED findings', () => {
+  function getPanelJs(html: string): string {
+    const scriptOpen = `<script nonce="${TEST_NONCE}">`;
+    const scriptClose = '</script>';
+    const s = html.indexOf(scriptOpen);
+    const e = html.lastIndexOf(scriptClose);
+    return html.slice(s + scriptOpen.length, e);
+  }
+
+  // -------------------------------------------------------------------------
+  // AC1: WCAG 1.4.1 — filter chips must NOT convey active/inactive by opacity alone.
+  // Fix: active chips get border:2px solid (heavier border); inactive get border-style:dashed.
+  // Both differences are perceivable without color (greyscale, forced-colors).
+  // -------------------------------------------------------------------------
+  it('AC1: active chip CSS uses border-width:2px (not 1px) as a non-color active indicator', () => {
+    const html = getHtml(TEST_NONCE);
+    // .chip:not(.off) must carry a 2px border — the non-color shape indicator.
+    expect(html).toContain('.chip:not(.off){');
+    const chipActiveIdx = html.indexOf('.chip:not(.off){');
+    const chipActiveEnd = html.indexOf('}', chipActiveIdx);
+    const chipActiveRule = html.slice(chipActiveIdx, chipActiveEnd);
+    expect(chipActiveRule).toContain('border:2px');
+  });
+
+  it('AC1: inactive chip CSS uses border-style:dashed as a non-color indicator', () => {
+    const html = getHtml(TEST_NONCE);
+    // .chip.off must have dashed border — visible in greyscale & forced-colors.
+    expect(html).toContain('.chip.off{');
+    const chipOffIdx = html.indexOf('.chip.off{');
+    const chipOffEnd = html.indexOf('}', chipOffIdx);
+    const chipOffRule = html.slice(chipOffIdx, chipOffEnd);
+    expect(chipOffRule).toContain('border-style:dashed');
+  });
+
+  it('AC1: active chip CSS includes font-weight:600 (additional non-color differentiator)', () => {
+    const html = getHtml(TEST_NONCE);
+    const chipActiveIdx = html.indexOf('.chip:not(.off){');
+    const chipActiveEnd = html.indexOf('}', chipActiveIdx);
+    const chipActiveRule = html.slice(chipActiveIdx, chipActiveEnd);
+    expect(chipActiveRule).toContain('font-weight:600');
+  });
+
+  it('AC1: forced-colors block uses 2px solid border for active chip and 1px dashed for inactive', () => {
+    const html = getHtml(TEST_NONCE);
+    // The forced-colors block must use border:2px solid ButtonText for active chips.
+    expect(html).toContain('border:2px solid ButtonText');
+    // Inactive chips in forced-colors use 1px dashed GrayText.
+    expect(html).toContain('border:1px dashed GrayText');
+  });
+
+  // -------------------------------------------------------------------------
+  // AC2: WCAG 4.1.2 — Prompt disclosure header must have role="button" and aria-expanded.
+  // The header is a <div> acting as a button; without role="button" screen readers
+  // cannot announce its interactive nature or announce its expanded/collapsed state.
+  // -------------------------------------------------------------------------
+  it('AC2: prompt disclosure header has role="button" (WCAG 4.1.2)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The header element must carry role="button"
+    expect(js).toContain('prompt-disc-hdr');
+    expect(js).toContain('role="button"');
+  });
+
+  it('AC2: prompt disclosure header has aria-expanded set to initial state', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // aria-expanded must be set on the .prompt-disc-hdr element.
+    // The value is "true" when open, "false" when closed (values come from JS ternary).
+    expect(js).toContain('aria-expanded=');
+    // The ternary produces both 'true' and 'false' values.
+    expect(js).toContain("?'true':'false'");
+  });
+
+  it('AC2: prompt disclosure toggle wire() updates aria-expanded after toggle', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // wire() must call setAttribute('aria-expanded', ...) on the header.
+    expect(js).toContain("setAttribute('aria-expanded'");
+  });
+
+  it('AC2: prompt disclosure header has tabindex="0" for keyboard operability', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('prompt-disc-hdr');
+    expect(js).toContain('tabindex="0"');
+  });
+
+  it('AC2: prompt disclosure wire() handles keydown Enter and Space (keyboard operability)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // Keyboard handling in wire() must respond to Enter and Space on prompt-disc-hdr.
+    expect(js).toContain("e.key==='Enter'");
+    expect(js).toContain("e.key===' '");
+    // Must call e.preventDefault() to stop Space from scrolling the page.
+    expect(js).toContain('e.preventDefault()');
+  });
+
+  // -------------------------------------------------------------------------
+  // AC3: Optional KPI labels must have title tooltips explaining jargon.
+  // 'In tokens', 'Cache read', 'Cache write' are technical terms — descriptions
+  // are surfaced via aria-describedby + sr-only spans (more AT-accessible than title=,
+  // which is not announced by most screen readers on non-interactive elements and is
+  // invisible on touch/keyboard-only navigation).
+  // -------------------------------------------------------------------------
+  it('AC3: In tokens KPI uses aria-describedby + sr-only description (not title= only)', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('In tokens');
+    // aria-describedby pattern: the KPI div references a sr-only span by id.
+    expect(html).toContain('aria-describedby="kpi-in-tok-desc"');
+    expect(html).toContain('id="kpi-in-tok-desc"');
+    expect(html).toContain('Total input tokens read from context');
+  });
+
+  it('AC3: Cache read KPI uses aria-describedby + sr-only description (not title= only)', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('Cache read');
+    expect(html).toContain('aria-describedby="kpi-cache-read-desc"');
+    expect(html).toContain('id="kpi-cache-read-desc"');
+    expect(html).toContain('Input tokens served from the prompt cache');
+  });
+
+  it('AC3: Cache write KPI uses aria-describedby + sr-only description (not title= only)', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('Cache write');
+    expect(html).toContain('aria-describedby="kpi-cache-write-desc"');
+    expect(html).toContain('id="kpi-cache-write-desc"');
+    expect(html).toContain('Input tokens written to the prompt cache');
+  });
+
+  // -------------------------------------------------------------------------
+  // AC4: PANELS array order must match render() order.
+  // The toggle bar labels are spatially ordered: their checkbox position in the
+  // toolbar must correspond to the panel's vertical position on the page.
+  // -------------------------------------------------------------------------
+  it('AC4: PANELS array order matches render() build order', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // Extract the PANELS constant line
+    const panelsLine = js.split('\n').find((l) => l.startsWith('const PANELS='));
+    expect(panelsLine).toBeDefined();
+    // Extract ordered keys from the PANELS array
+    const keys: string[] = [];
+    const re = /\['([^']+)','[^']+'\]/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(panelsLine!)) !== null) {
+      keys.push(m[1]!);
+    }
+    // Extract render order from the render() function body
+    // The render function uses: if(state.on.X!==0)h+=XPanel()
+    const renderOrder: string[] = [];
+    const renderRe = /state\.on\.(\w+)!==0/g;
+    let rm: RegExpExecArray | null;
+    while ((rm = renderRe.exec(js)) !== null) {
+      renderOrder.push(rm[1]!);
+    }
+    // PANELS keys and render order must be identical sequences
+    expect(keys).toEqual(renderOrder);
+  });
+
+  // -------------------------------------------------------------------------
+  // AC5: 'Clear filters' recovery in empty filtered-findings must be a clearly
+  // visible button, not buried inline. The button must use a CSS class giving it
+  // proper padding and standalone appearance.
+  // -------------------------------------------------------------------------
+  it('AC5: empty-filtered-findings uses .findings-empty CSS class (not inline style)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The wrapper must use the .findings-empty class
+    expect(js).toContain('class="findings-empty"');
+    // Must NOT use the old inline style=display:flex on this div
+    expect(js).not.toContain('style="display:flex;flex-direction:column');
+  });
+
+  it('AC5: empty-filtered-findings Clear filters button uses .findings-empty-btn class', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The button must use .findings-empty-btn (not bare .clear-btn) so it gets
+    // standalone padding/size appropriate for a primary recovery action.
+    expect(js).toContain('class="findings-empty-btn"');
+    expect(js).toContain('id="emptyFiltersBtn"');
+  });
+
+  it('AC5: CSS .findings-empty class is defined with flex+column layout', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.findings-empty{');
+    const idx = html.indexOf('.findings-empty{');
+    const end = html.indexOf('}', idx);
+    const rule = html.slice(idx, end);
+    expect(rule).toContain('flex-direction:column');
+  });
+
+  it('AC5: CSS .findings-empty-btn class is defined with standalone padding', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.findings-empty-btn{');
+    const idx = html.indexOf('.findings-empty-btn{');
+    const end = html.indexOf('}', idx);
+    const rule = html.slice(idx, end);
+    // Must have padding larger than the chip (chip has padding:2px 8px)
+    expect(rule).toContain('padding:');
+  });
+
+  it('AC5: wire() still wires emptyFiltersBtn via addEventListener (nonce-safe)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The old test still passes: addEventListener wiring remains
+    expect(js).toContain("var ef=document.getElementById('emptyFiltersBtn')");
+    expect(js).toContain('if(ef)ef.addEventListener');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M2-Layout: collapsible panel headers (click h3 to fold/unfold, persist via setState)
+// ---------------------------------------------------------------------------
+describe('M2-Layout — collapsible panel section headers', () => {
+  function getPanelJs(html: string): string {
+    const scriptOpen = `<script nonce="${TEST_NONCE}">`;
+    const scriptClose = '</script>';
+    const s = html.indexOf(scriptOpen);
+    const e = html.lastIndexOf(scriptClose);
+    return html.slice(s + scriptOpen.length, e);
+  }
+
+  // -------------------------------------------------------------------------
+  // CSS: panel h3 must NOT have cursor:pointer — only the child button gets it.
+  // The h3 is a non-interactive heading landmark; cursor:pointer on it would be
+  // a visual lie (clicks on the h3 outside the button area are not handled).
+  // The global 'button' rule gives .panel>h3>button its pointer cursor.
+  // -------------------------------------------------------------------------
+  it('CSS panel>h3 must NOT have cursor:pointer — only the child button gets pointer cursor', () => {
+    const html = getHtml(TEST_NONCE);
+    // cursor:pointer must be present somewhere in the CSS (on the button rule), but
+    // must NOT appear inside the .panel>h3{...} rule itself.
+    expect(html).toContain('cursor:pointer'); // present on the button / .row rule
+    expect(html).toContain('.panel>h3{');
+    // Extract the .panel>h3 rule body and assert it does NOT contain cursor:pointer.
+    // A future contributor adding cursor:pointer to h3 would regress keyboard focus
+    // behavior and create a false pointer affordance on a non-interactive element.
+    expect(html).not.toMatch(/\.panel>h3\{[^}]*cursor:pointer/);
+  });
+
+  it('CSS panel>h3 has focus-visible outline for keyboard operability', () => {
+    const html = getHtml(TEST_NONCE);
+    // The focus rule must be present for the panel header
+    expect(html).toContain('.panel>h3:focus-visible{');
+    const idx = html.indexOf('.panel>h3:focus-visible{');
+    const end = html.indexOf('}', idx);
+    const rule = html.slice(idx, end);
+    expect(rule).toContain('outline');
+    expect(rule).toContain('--vscode-focusBorder');
+  });
+
+  it('CSS defines .panel-chevron rule with transition (caret indicator)', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.panel-chevron{');
+    const idx = html.indexOf('.panel-chevron{');
+    const end = html.indexOf('}', idx);
+    const rule = html.slice(idx, end);
+    expect(rule).toContain('transition:');
+  });
+
+  it('CSS defines .panel.collapsed>.body{display:none} to hide body when collapsed', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.panel.collapsed>.body{display:none}');
+  });
+
+  it('CSS defines .panel.collapsed>h3{border-bottom:none} (no orphan border when collapsed)', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.panel.collapsed>h3{border-bottom:none}');
+  });
+
+  // -------------------------------------------------------------------------
+  // JS: panel() helper produces h3 containing a real <button> child.
+  // The <button> carries tabindex, aria-expanded, and data-pkey — NOT the h3.
+  // The h3 is an implicit heading landmark only; role="button" must NOT appear
+  // on the h3 itself (that would conflict with the native heading semantics).
+  // -------------------------------------------------------------------------
+  it('JS panel() helper produces h3 containing a real button element (not role=button on h3)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The panel function must produce an h3 that directly contains a <button> with data-pkey.
+    // This verifies the correct WCAG 4.1.2 structure: native button (not a role attribute hack).
+    expect(js).toMatch(/<h3[^>]*><button[^>]*data-pkey/);
+    // The h3 element itself must NOT carry role="button" — that would override heading semantics
+    // and mislead future contributors into thinking the h3 needs to be interactive.
+    expect(js).not.toMatch(/<h3[^>]*role="button"/);
+  });
+
+  it('JS panel() helper produces h3 with tabindex="0" for keyboard operability', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('tabindex="0"');
+  });
+
+  it('JS panel() helper sets aria-expanded on the h3 header', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // aria-expanded reflects open/closed state for screen readers.
+    expect(js).toContain('aria-expanded=');
+  });
+
+  it('JS panel() helper sets data-pkey attribute on the h3 (for wire() lookup)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // wire() queries .panel>h3[data-pkey] to attach click/keydown handlers.
+    expect(js).toContain('data-pkey=');
+  });
+
+  it('JS panel() helper injects .panel-chevron span with aria-hidden="true" (decorative)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('panel-chevron');
+    expect(js).toContain('aria-hidden="true"');
+  });
+
+  it('JS panel() helper applies "collapsed" CSS class when panelOpen[k] is 0', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The panel helper must apply 'collapsed' when the section is closed.
+    expect(js).toContain("'collapsed'");
+    // The class must reference state.panelOpen
+    expect(js).toContain('state.panelOpen');
+  });
+
+  // -------------------------------------------------------------------------
+  // JS state: panelOpen key is in state initializer, defaulting charts to 0.
+  // -------------------------------------------------------------------------
+  it('JS state initializer includes panelOpen key', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).toContain('panelOpen:');
+  });
+
+  it('JS state panelOpen defaults charts to 0 (collapsed) to cut default scroll distance', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // panelOpen default must have charts:0 so Charts starts collapsed even when toggled on.
+    // This is the M2-Layout requirement: "Charts panel collapsed by default".
+    // The state line uses Object.assign({key:val,...}, _s.panelOpen||{}).
+    // Search for the Object.assign literal to skip any comment lines containing 'panelOpen:'.
+    const panelOpenIdx = js.indexOf('panelOpen:Object.assign(');
+    expect(panelOpenIdx).toBeGreaterThan(-1);
+    const panelOpenSlice = js.slice(panelOpenIdx, panelOpenIdx + 200);
+    expect(panelOpenSlice).toContain('charts:0');
+  });
+
+  it('JS state panelOpen defaults all non-charts panels to 1 (expanded)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // All panels other than charts should default to 1 (visible/expanded).
+    const panelOpenIdx = js.indexOf('panelOpen:Object.assign(');
+    expect(panelOpenIdx).toBeGreaterThan(-1);
+    const panelOpenSlice = js.slice(panelOpenIdx, panelOpenIdx + 200);
+    expect(panelOpenSlice).toContain('overview:1');
+    expect(panelOpenSlice).toContain('agents:1');
+    expect(panelOpenSlice).toContain('findings:1');
+    expect(panelOpenSlice).toContain('verdicts:1');
+    expect(panelOpenSlice).toContain('changed:1');
+  });
+
+  it('JS state panelOpen is persisted from _s (restored from api.getState)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The state initializer must merge _s.panelOpen so persisted collapse state
+    // survives a snapshot re-render.
+    expect(js).toContain('_s.panelOpen');
+  });
+
+  // -------------------------------------------------------------------------
+  // JS wire(): panel header click and keyboard handlers (nonce-safe).
+  // -------------------------------------------------------------------------
+  it('JS wire() wires .panel>h3>button[data-pkey] elements via querySelectorAll', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // wire() targets the <button> inside the h3 directly — data-pkey is on the button,
+    // not the h3. Using the button as the selector anchor avoids the dead-selector bug
+    // where '.panel>h3[data-pkey]' never matched (h3 never had data-pkey).
+    expect(js).toContain("querySelectorAll('.panel>h3>button[data-pkey]')");
+  });
+
+  it('JS wire() panel toggle uses addEventListener not inline onclick (nonce-safe)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // Inline onclick handlers are blocked by nonce-based CSP; addEventListener is required.
+    expect(js).toContain("addEventListener('click',toggle_panel)");
+    // Must NOT use onclick=
+    expect(js).not.toContain('.panel>h3" onclick');
+    expect(js).not.toContain("h3.onclick");
+  });
+
+  it('JS wire() panel toggle responds to Enter and Space keydown (keyboard operability)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The keydown handler must support both Enter and Space.
+    // These test patterns are constrained to the section after querySelectorAll(.panel>h3).
+    const idx = js.indexOf("querySelectorAll('.panel>h3>button[data-pkey]')");
+    expect(idx).toBeGreaterThan(-1);
+    // Use 1000 chars — the keydown handler follows the click handler in the same forEach block.
+    const section = js.slice(idx, idx + 1000);
+    expect(section).toContain("'Enter'");
+    expect(section).toContain("' '");
+    expect(section).toContain('e.preventDefault()');
+  });
+
+  it('JS wire() panel toggle calls classList.toggle("collapsed") on the parent panel', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The toggle function must toggle the "collapsed" CSS class on the .panel element.
+    expect(js).toContain("classList.toggle('collapsed')");
+  });
+
+  it('JS wire() panel toggle updates aria-expanded on the button after toggle', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // After toggling, aria-expanded must be updated on the <button> (which carries aria-expanded)
+    // so screen readers announce the new open/closed state. The button is now the toggle target
+    // (data-pkey is on the button, not the h3).
+    const idx = js.indexOf("querySelectorAll('.panel>h3>button[data-pkey]')");
+    const section = js.slice(idx, idx + 600);
+    expect(section).toContain("setAttribute('aria-expanded'");
+  });
+
+  it('JS wire() panel toggle persists state via state.panelOpen[k] and save()', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // The toggle must update state.panelOpen[k] and call save() to persist.
+    const idx = js.indexOf("querySelectorAll('.panel>h3>button[data-pkey]')");
+    const section = js.slice(idx, idx + 600);
+    expect(section).toContain('state.panelOpen[k]');
+    expect(section).toContain('save()');
+  });
+
+  // -------------------------------------------------------------------------
+  // Scroll position preservation: panel collapse must not disrupt M1 scroll pattern.
+  // The panel collapse toggles only the CSS class (no innerHTML replace), so
+  // window.scrollY is preserved automatically — no explicit save/restore needed.
+  // -------------------------------------------------------------------------
+  it('JS wire() panel toggle does NOT call render() (avoids scroll position reset)', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // Toggling a panel section must not re-render the whole page — that would
+    // reset window.scrollY and lose the M1 scroll position preservation.
+    // The toggle only mutates the DOM in place (classList.toggle).
+    const idx = js.indexOf("querySelectorAll('.panel>h3>button[data-pkey]')");
+    expect(idx).toBeGreaterThan(-1);
+    // The toggle_panel function should not contain a call to render()
+    // Extract only the toggle_panel function body to avoid false positives
+    const section = js.slice(idx, idx + 600);
+    // render() must not appear inside the panel toggle handler
+    expect(section).not.toMatch(/toggle_panel[^}]*render\(\)/);
   });
 });
