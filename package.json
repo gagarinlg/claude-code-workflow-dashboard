@@ -2,7 +2,7 @@
   "name": "claude-code-workflow-dashboard",
   "displayName": "Claude Code Workflow Dashboard",
   "description": "Live dashboard for Claude Code workflow runs — loop & agent overview, per-agent output, and review findings, updated in real time. Unofficial community tool, not affiliated with Anthropic.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "malte-langermann",
   "author": {
     "name": "Malte Langermann",
@@ -106,24 +106,35 @@
         "title": "Open Workflow Authoring Guide",
         "category": "Claude Code Workflow",
         "icon": "$(book)"
+      },
+      {
+        "command": "claudeWorkflow.selectRun",
+        "title": "Select Workflow Run…",
+        "category": "Claude Code Workflow",
+        "icon": "$(list-unordered)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "claudeWorkflow.openGuide",
+          "command": "claudeWorkflow.selectRun",
           "when": "view == claudeWorkflow.dashboard",
           "group": "navigation@1"
         },
         {
-          "command": "claudeWorkflow.open",
+          "command": "claudeWorkflow.openGuide",
           "when": "view == claudeWorkflow.dashboard",
           "group": "navigation@2"
         },
         {
-          "command": "claudeWorkflow.refresh",
+          "command": "claudeWorkflow.open",
           "when": "view == claudeWorkflow.dashboard",
           "group": "navigation@3"
+        },
+        {
+          "command": "claudeWorkflow.refresh",
+          "when": "view == claudeWorkflow.dashboard",
+          "group": "navigation@4"
         }
       ]
     },

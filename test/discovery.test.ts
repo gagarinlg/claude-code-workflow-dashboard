@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { findWorkflowDir } from '../src/data/discovery';
+import { findWorkflowDir, listRecentRuns, formatRelativeTime } from '../src/data/discovery';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const BASE = path.join(FIXTURES, 'base');
@@ -104,7 +104,7 @@ describe('findWorkflowDir', () => {
     //
     // Note: chmod-000 on the wf_* dir itself does NOT make statSync fail — stat()
     // only needs execute permission on the PARENT, not the target dir. The real
-    // trigger is TOCTOU deletion, which requires mocking (TODO M1).
+    // TOCTOU deletion case (wfDir disappears mid-scan) is covered in test/defensive.test.ts.
     // Lines 27-28 are marked /* c8 ignore next */ in discovery.ts.
     const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'discovery-toctou2-'));
     try {
@@ -131,5 +131,166 @@ describe('findWorkflowDir', () => {
     // With depth=0 the tree is only the root level of BASE —
     // proj-abc is there but wf dirs are at depth 4 from BASE
     expect(found).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listRecentRuns
+// ---------------------------------------------------------------------------
+describe('listRecentRuns', () => {
+  // Re-touch wf_newer so it is always newer than wf_older regardless of git
+  // checkout order — same rationale as the findWorkflowDir beforeAll above.
+  beforeAll(() => {
+    const now = new Date();
+    fs.utimesSync(WF_NEWER, now, now);
+  });
+
+  it('returns an array for the base fixture (at least 2 runs)', () => {
+    const runs = listRecentRuns(BASE);
+    expect(runs.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('returns runs sorted newest-first by mtime', () => {
+    const runs = listRecentRuns(BASE);
+    for (let i = 1; i < runs.length; i++) {
+      expect(runs[i - 1]!.mtimeMs).toBeGreaterThanOrEqual(runs[i]!.mtimeMs);
+    }
+  });
+
+  it('first result is wf_newer (the most recently touched dir)', () => {
+    const runs = listRecentRuns(BASE);
+    expect(runs[0]?.runId).toBe('wf_newer');
+  });
+
+  it('each run has the correct runId (basename of the wf_* dir)', () => {
+    const runs = listRecentRuns(BASE);
+    for (const r of runs) {
+      expect(r.runId).toMatch(/^wf_/);
+      expect(r.runId).toBe(path.basename(r.dir));
+    }
+  });
+
+  it('each run has an absolute dir path', () => {
+    const runs = listRecentRuns(BASE);
+    for (const r of runs) {
+      expect(path.isAbsolute(r.dir)).toBe(true);
+    }
+  });
+
+  it('each run has a positive mtimeMs', () => {
+    const runs = listRecentRuns(BASE);
+    for (const r of runs) {
+      expect(r.mtimeMs).toBeGreaterThan(0);
+    }
+  });
+
+  it('wf_newer has correct agentCount (6 agent-*.jsonl files)', () => {
+    const runs = listRecentRuns(BASE);
+    const newer = runs.find((r) => r.runId === 'wf_newer');
+    expect(newer).toBeDefined();
+    // The base fixture wf_newer has agent-aaa through agent-fff (6 files)
+    expect(newer!.agentCount).toBe(6);
+  });
+
+  it('wf_older has agentCount 0 (no agent-*.jsonl files, only journal.jsonl)', () => {
+    const runs = listRecentRuns(BASE);
+    const older = runs.find((r) => r.runId === 'wf_older');
+    expect(older).toBeDefined();
+    expect(older!.agentCount).toBe(0);
+  });
+
+  it('returns empty array for a non-existent base', () => {
+    expect(listRecentRuns('/no/such/path')).toEqual([]);
+  });
+
+  it('returns empty array when no wf_* dirs exist', () => {
+    const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'discovery-recent-empty-'));
+    try {
+      expect(listRecentRuns(tmpBase)).toEqual([]);
+    } finally {
+      fs.rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+
+  it('skips node_modules subtrees', () => {
+    const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'discovery-recent-nm-'));
+    try {
+      const nmWf = path.join(tmpBase, 'node_modules', 'workflows', 'wf_inside_nm');
+      fs.mkdirSync(nmWf, { recursive: true });
+      expect(listRecentRuns(tmpBase)).toEqual([]);
+    } finally {
+      fs.rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+
+  it('collects multiple projects under the same base (multi-project layout)', () => {
+    const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'discovery-recent-multi-'));
+    try {
+      // Simulate ~/.claude/projects layout: two project dirs each with a run.
+      const wf1 = path.join(tmpBase, 'proj-one', 'workflows', 'wf_alpha');
+      const wf2 = path.join(tmpBase, 'proj-two', 'workflows', 'wf_beta');
+      fs.mkdirSync(wf1, { recursive: true });
+      fs.mkdirSync(wf2, { recursive: true });
+      // Make wf_alpha newer by touching it after wf_beta.
+      const past = new Date(Date.now() - 60_000);
+      fs.utimesSync(wf2, past, past);
+      const now = new Date();
+      fs.utimesSync(wf1, now, now);
+
+      const runs = listRecentRuns(tmpBase);
+      expect(runs.length).toBe(2);
+      expect(runs[0]?.runId).toBe('wf_alpha');
+      expect(runs[1]?.runId).toBe('wf_beta');
+    } finally {
+      fs.rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+
+  it('is bounded by the depth parameter', () => {
+    // wf dirs in the base fixture are at depth 4 from BASE; depth=0 finds nothing
+    expect(listRecentRuns(BASE, 0)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatRelativeTime
+// ---------------------------------------------------------------------------
+describe('formatRelativeTime', () => {
+  const now = 1_700_000_000_000; // fixed reference epoch for deterministic tests
+
+  it('returns "Xs ago" for durations under one minute', () => {
+    expect(formatRelativeTime(now - 5_000, now)).toBe('5s ago');
+    expect(formatRelativeTime(now - 59_000, now)).toBe('59s ago');
+  });
+
+  it('returns "0s ago" for current time (no negative)', () => {
+    expect(formatRelativeTime(now, now)).toBe('0s ago');
+  });
+
+  it('returns "0s ago" when mtimeMs is in the future (clamped at 0)', () => {
+    // Future timestamps are clamped to 0 seconds — never negative.
+    expect(formatRelativeTime(now + 30_000, now)).toBe('0s ago');
+  });
+
+  it('returns "Xm ago" for durations between 1 and 59 minutes', () => {
+    expect(formatRelativeTime(now - 60_000, now)).toBe('1m ago');
+    expect(formatRelativeTime(now - 3_540_000, now)).toBe('59m ago');
+  });
+
+  it('returns "Xh ago" for durations between 1 and 23 hours', () => {
+    expect(formatRelativeTime(now - 3_600_000, now)).toBe('1h ago');
+    expect(formatRelativeTime(now - 82_800_000, now)).toBe('23h ago');
+  });
+
+  it('returns "Xd ago" for durations of 24 hours or more', () => {
+    expect(formatRelativeTime(now - 86_400_000, now)).toBe('1d ago');
+    expect(formatRelativeTime(now - 864_000_000, now)).toBe('10d ago');
+  });
+
+  it('uses Date.now() as default when nowMs is omitted', () => {
+    // We can only verify the format pattern — not the exact value.
+    const recent = Date.now() - 10_000;
+    const result = formatRelativeTime(recent);
+    expect(result).toMatch(/^\d+s ago$/);
   });
 });

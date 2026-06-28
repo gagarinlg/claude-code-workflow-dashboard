@@ -204,6 +204,74 @@ describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
     expect(result.labels.length).toBeGreaterThan(0);
   });
 
+  it('agent labels are derived from agentType in meta.json (not from prompt text)', () => {
+    // wf_basic contains meta.json files for agents aaa/bbb/ccc/ddd/eee with known
+    // agentType values. buildSnapshot must use agentTypeToLabel() for these agents
+    // and produce distinct, correct role labels rather than the generic prompt-derived labels.
+    const result = buildSnapshot(snapshotCfg);
+    if (!result.ok) return;
+    const byId = new Map(result.agents.map((a) => [a.id, a]));
+
+    // aaa: workflow-plugins:implementer → Implement/Fix
+    const aaa = byId.get('aaa');
+    expect(aaa, 'agent aaa must be present').toBeDefined();
+    expect(aaa!.label).toBe('Implement/Fix');
+    expect(aaa!.key).toBe('implementer');
+
+    // bbb: workflow-plugins:test-verifier → Verify
+    const bbb = byId.get('bbb');
+    expect(bbb, 'agent bbb must be present').toBeDefined();
+    expect(bbb!.label).toBe('Verify');
+    expect(bbb!.key).toBe('test_verifier');
+
+    // ccc: workflow-plugins:architect → Architecture
+    const ccc = byId.get('ccc');
+    expect(ccc, 'agent ccc must be present').toBeDefined();
+    expect(ccc!.label).toBe('Architecture');
+    expect(ccc!.key).toBe('architect');
+
+    // ddd: workflow-plugins:completeness-critic → Completeness
+    const ddd = byId.get('ddd');
+    expect(ddd, 'agent ddd must be present').toBeDefined();
+    expect(ddd!.label).toBe('Completeness');
+    expect(ddd!.key).toBe('completeness_critic');
+
+    // eee: workflow-plugins:code-reviewer → Code review
+    const eee = byId.get('eee');
+    expect(eee, 'agent eee must be present').toBeDefined();
+    expect(eee!.label).toBe('Code review');
+    expect(eee!.key).toBe('code_reviewer');
+  });
+
+  it('agent without meta.json agentType falls back to classify/deriveLabel', () => {
+    // Agent fff has no meta.json. Its prompt is "You are a starting agent with no output yet".
+    // buildSnapshot must fall back to classify() / deriveLabel() and produce a sensible label
+    // derived from the prompt, not crash or produce an empty string.
+    const result = buildSnapshot(snapshotCfg);
+    if (!result.ok) return;
+    const fff = result.agents.find((a) => a.id === 'fff');
+    // fff may not appear if its transcript has no events (it only has one user line, no assistant).
+    // If it's absent that is acceptable; if present it must have a non-empty label.
+    if (!fff) return;
+    expect(typeof fff.label).toBe('string');
+    expect(fff.label.length).toBeGreaterThan(0);
+    // Must NOT be one of the agentType-derived labels — it has no meta.json agentType.
+    expect(['Implement/Fix', 'Architecture', 'Code review', 'Security', 'UI/UX', 'Verify', 'Completeness'])
+      .not.toContain(fff.label);
+  });
+
+  it('implementer agent label is Implement/Fix, never a reviewer label', () => {
+    // Regression: before M1-Naming, classify() would collapse all reviewers to
+    // "Reviewer" and could mislabel implementers. With agentType primary, the
+    // implementer (aaa) must be "Implement/Fix" even if its prompt embeds reviewer keywords.
+    const result = buildSnapshot(snapshotCfg);
+    if (!result.ok) return;
+    const aaa = result.agents.find((a) => a.id === 'aaa');
+    expect(aaa, 'agent aaa must be present').toBeDefined();
+    expect(aaa!.label).not.toMatch(/[Rr]eviewer/);
+    expect(aaa!.label).toBe('Implement/Fix');
+  });
+
   it('ghost agent result appears in allFindings even with no transcript file', () => {
     // journal.jsonl contains a result record for agentId 'ghost-no-file' that has
     // no corresponding agent-ghost-no-file.jsonl transcript. The snapshot must still
@@ -217,6 +285,231 @@ describe('buildSnapshot — with wf_basic via synthetic cfg', () => {
     expect(ghostAgent).toBeUndefined();
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// Pass-numbering: per-agentType keying (M1-Naming side-effect)
+// ---------------------------------------------------------------------------
+// Scenario: two reviewer types (code-reviewer, security-reviewer) run in two
+// rounds. Round 1 → both reviewers get pass=1; Round 2 → both get pass=2.
+// The pass counter must be keyed per agentType so that distinct reviewer types
+// within the same round share the same pass number, and the same reviewer type
+// across rounds increments 1→2.
+describe('buildSnapshot — pass-numbering per-agentType', () => {
+  let tmpBase: string;
+  let wfDir: string;
+
+  const TRANSCRIPT = (role: string) =>
+    `{"type":"user","message":{"content":"You are the ${role} agent"}}\n`;
+  const META = (agentType: string, agentId: string) =>
+    JSON.stringify({ agentType, agentId }) + '\n';
+
+  // Journal: round 1 results for cr1+sr1, then round 2 results for cr2+sr2.
+  // Each result carries one finding so allFindings is non-empty per agent.
+  const JOURNAL = [
+    '{"type":"started","agentId":"cr1"}',
+    '{"type":"started","agentId":"sr1"}',
+    '{"type":"started","agentId":"cr2"}',
+    '{"type":"started","agentId":"sr2"}',
+    // Round 1 — both reviewers submit findings
+    '{"type":"result","agentId":"cr1","result":{"findings":[{"severity":"HIGH","title":"CR1 finding"}],"verdict":"1 finding"}}',
+    '{"type":"result","agentId":"sr1","result":{"findings":[{"severity":"LOW","title":"SR1 finding"}],"verdict":"1 finding"}}',
+    // Round 2 — same reviewer types submit again (second agents of each type)
+    '{"type":"result","agentId":"cr2","result":{"findings":[{"severity":"HIGH","title":"CR2 finding"}],"verdict":"1 finding"}}',
+    '{"type":"result","agentId":"sr2","result":{"findings":[{"severity":"LOW","title":"SR2 finding"}],"verdict":"1 finding"}}',
+  ].join('\n') + '\n';
+
+  beforeEach(() => {
+    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'snap-pass-'));
+    wfDir = path.join(tmpBase, 'workflows', 'wf_pass_test');
+    fs.mkdirSync(wfDir, { recursive: true });
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), JOURNAL);
+    // Agent transcripts — each must have at least one event so jload returns non-empty
+    for (const [id, role] of [
+      ['cr1', 'code reviewer round 1'],
+      ['sr1', 'security reviewer round 1'],
+      ['cr2', 'code reviewer round 2'],
+      ['sr2', 'security reviewer round 2'],
+    ] as [string, string][]) {
+      fs.writeFileSync(path.join(wfDir, `agent-${id}.jsonl`), TRANSCRIPT(role));
+    }
+    // meta.json — agentType is the primary role signal
+    fs.writeFileSync(path.join(wfDir, 'agent-cr1.meta.json'), META('workflow-plugins:code-reviewer', 'cr1'));
+    fs.writeFileSync(path.join(wfDir, 'agent-sr1.meta.json'), META('workflow-plugins:security-reviewer', 'sr1'));
+    fs.writeFileSync(path.join(wfDir, 'agent-cr2.meta.json'), META('workflow-plugins:code-reviewer', 'cr2'));
+    fs.writeFileSync(path.join(wfDir, 'agent-sr2.meta.json'), META('workflow-plugins:security-reviewer', 'sr2'));
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(tmpBase, { recursive: true, force: true }); } catch {}
+  });
+
+  const makeCfg = (base: string): Cfg => ({
+    base,
+    repo: '',
+    refreshMs: 4000,
+    statusBar: true,
+    roleRules: DEFAULT_ROLE_RULES,
+  });
+
+  it('two reviewers in one round both get pass=1 (not 1 and 2)', () => {
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const cr1Finding = result.allFindings.find((f) => f.title === 'CR1 finding');
+    const sr1Finding = result.allFindings.find((f) => f.title === 'SR1 finding');
+    expect(cr1Finding).toBeDefined();
+    expect(sr1Finding).toBeDefined();
+    // Both reviewers in round 1 must have pass=1, not diverging (1 vs 2)
+    expect(cr1Finding!.pass).toBe(1);
+    expect(sr1Finding!.pass).toBe(1);
+  });
+
+  it('same reviewer type across two rounds increments pass 1→2', () => {
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const cr1Finding = result.allFindings.find((f) => f.title === 'CR1 finding');
+    const cr2Finding = result.allFindings.find((f) => f.title === 'CR2 finding');
+    expect(cr1Finding).toBeDefined();
+    expect(cr2Finding).toBeDefined();
+    // First code-reviewer → pass 1, second code-reviewer → pass 2
+    expect(cr1Finding!.pass).toBe(1);
+    expect(cr2Finding!.pass).toBe(2);
+  });
+
+  it('full pass grid: two reviewers × two rounds', () => {
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const byTitle = new Map(result.allFindings.map((f) => [f.title, f]));
+
+    // Round 1: both reviewer types at pass 1
+    expect(byTitle.get('CR1 finding')?.pass).toBe(1);
+    expect(byTitle.get('SR1 finding')?.pass).toBe(1);
+    // Round 2: both reviewer types at pass 2
+    expect(byTitle.get('CR2 finding')?.pass).toBe(2);
+    expect(byTitle.get('SR2 finding')?.pass).toBe(2);
+
+    // Reviewer labels and keys are correct
+    expect(byTitle.get('CR1 finding')?.reviewer).toBe('Code review');
+    expect(byTitle.get('CR1 finding')?.key).toBe('code_reviewer');
+    expect(byTitle.get('SR1 finding')?.reviewer).toBe('Security');
+    expect(byTitle.get('SR1 finding')?.key).toBe('security_reviewer');
+    expect(byTitle.get('CR2 finding')?.reviewer).toBe('Code review');
+    expect(byTitle.get('CR2 finding')?.key).toBe('code_reviewer');
+    expect(byTitle.get('SR2 finding')?.reviewer).toBe('Security');
+    expect(byTitle.get('SR2 finding')?.key).toBe('security_reviewer');
+
+    // loop.passes reflects the highest round number
+    expect(result.loop.passes).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Verdicts keying: verdicts must be keyed by agentType key (not display label)
+// so two agents with the same label but different agentType keys do not
+// clobber each other's verdict.
+// ---------------------------------------------------------------------------
+describe('buildSnapshot — verdicts keyed by agentType key', () => {
+  let tmpBase: string;
+  let wfDir: string;
+
+  const TRANSCRIPT = (role: string) =>
+    `{"type":"user","message":{"content":"You are the ${role} agent"}}\n`;
+  const META = (agentType: string) => JSON.stringify({ agentType }) + '\n';
+
+  beforeEach(() => {
+    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'snap-verdicts-'));
+    wfDir = path.join(tmpBase, 'workflows', 'wf_verdicts_test');
+    fs.mkdirSync(wfDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(tmpBase, { recursive: true, force: true }); } catch {}
+  });
+
+  const makeCfg = (base: string): Cfg => ({
+    base,
+    repo: '',
+    refreshMs: 4000,
+    statusBar: true,
+    roleRules: DEFAULT_ROLE_RULES,
+  });
+
+  it('verdicts from two distinct reviewer types are independently preserved', () => {
+    // Two reviewers (code-reviewer and security-reviewer) both submit a finding result
+    // with a verdict. Their keys differ (code_reviewer vs security_reviewer). The
+    // verdicts map must have two entries, not one (no silent overwrite).
+    const journal = [
+      '{"type":"started","agentId":"cr1"}',
+      '{"type":"started","agentId":"sr1"}',
+      '{"type":"result","agentId":"cr1","result":{"findings":[{"severity":"HIGH","title":"CR finding"}],"verdict":"Code review complete"}}',
+      '{"type":"result","agentId":"sr1","result":{"findings":[{"severity":"LOW","title":"SR finding"}],"verdict":"Security review complete"}}',
+    ].join('\n') + '\n';
+
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-cr1.jsonl'), TRANSCRIPT('code reviewer'));
+    fs.writeFileSync(path.join(wfDir, 'agent-sr1.jsonl'), TRANSCRIPT('security reviewer'));
+    fs.writeFileSync(path.join(wfDir, 'agent-cr1.meta.json'), META('workflow-plugins:code-reviewer'));
+    fs.writeFileSync(path.join(wfDir, 'agent-sr1.meta.json'), META('workflow-plugins:security-reviewer'));
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const verdictKeys = Object.keys(result.verdicts);
+    // Both verdicts must be present — keyed by agentType key
+    expect(verdictKeys).toContain('code_reviewer');
+    expect(verdictKeys).toContain('security_reviewer');
+    expect(result.verdicts['code_reviewer']).toBe('Code review complete');
+    expect(result.verdicts['security_reviewer']).toBe('Security review complete');
+    // Exactly two entries — no clobber
+    expect(verdictKeys.length).toBe(2);
+  });
+
+  it('same reviewer type submitting twice overwrites verdict (second pass wins)', () => {
+    // When the same reviewer key submits twice (two rounds), the last verdict wins.
+    // This is by-design: the verdict represents the latest assessment.
+    const journal = [
+      '{"type":"started","agentId":"cr1"}',
+      '{"type":"started","agentId":"cr2"}',
+      '{"type":"result","agentId":"cr1","result":{"findings":[],"verdict":"Round 1 verdict"}}',
+      '{"type":"result","agentId":"cr2","result":{"findings":[],"verdict":"Round 2 verdict"}}',
+    ].join('\n') + '\n';
+
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-cr1.jsonl'), TRANSCRIPT('code reviewer round 1'));
+    fs.writeFileSync(path.join(wfDir, 'agent-cr2.jsonl'), TRANSCRIPT('code reviewer round 2'));
+    fs.writeFileSync(path.join(wfDir, 'agent-cr1.meta.json'), META('workflow-plugins:code-reviewer'));
+    fs.writeFileSync(path.join(wfDir, 'agent-cr2.meta.json'), META('workflow-plugins:code-reviewer'));
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const verdictKeys = Object.keys(result.verdicts);
+    // Same key → one entry; second round's verdict overwrites first
+    expect(verdictKeys.length).toBe(1);
+    expect(verdictKeys[0]).toBe('code_reviewer');
+    expect(result.verdicts['code_reviewer']).toBe('Round 2 verdict');
+  });
+
+  it('verdict newlines are stripped to spaces', () => {
+    const journal = [
+      '{"type":"started","agentId":"cr1"}',
+      '{"type":"result","agentId":"cr1","result":{"findings":[],"verdict":"Line 1\\nLine 2"}}',
+    ].join('\n') + '\n';
+
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-cr1.jsonl'), TRANSCRIPT('code reviewer'));
+    fs.writeFileSync(path.join(wfDir, 'agent-cr1.meta.json'), META('workflow-plugins:code-reviewer'));
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.verdicts['code_reviewer']).toBe('Line 1 Line 2');
+  });
 });
 
 // ---------------------------------------------------------------------------

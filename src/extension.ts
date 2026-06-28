@@ -7,7 +7,29 @@ import { buildSnapshot, CHANGED_MAX_SECS, MAX_AGENTS } from './data/snapshot';
 import { getHtml } from './webview/html';
 import type { Cfg, Snapshot, SnapshotOk } from './data/snapshot';
 import type { RoleRule } from './data/parse';
-import { DEFAULT_ROLE_RULES } from './data/parse';
+import { DEFAULT_ROLE_RULES, STALE_SECS } from './data/parse';
+import { listRecentRuns, formatRelativeTime } from './data/discovery';
+import type { RecentRun } from './data/discovery';
+
+// --- Module-level state ---
+// All state declarations are hoisted above every function that closes over them
+// so there is never a TDZ (Temporal Dead Zone) risk — getCfg() references
+// pinnedDir, so pinnedDir must be declared before getCfg is defined.
+// TODO(M2): move into an activation-context object to support clean reload
+// across multiple activate() calls. Deferred from M1: the activate() reset
+// block (lines ~239-262) already handles the re-activation hazard correctly;
+// the structural refactor is a code-quality improvement, not a correctness fix.
+let latest: Snapshot | null = null;
+const webviews = new Set<vscode.Webview>();
+let statusItem: vscode.StatusBarItem | null = null;
+let watcher: fs.FSWatcher | null = null;
+let watchedDir: string | null = null;
+let editorPanel: vscode.WebviewPanel | null = null;
+
+// Pinned run: when non-null, buildSnapshot uses this wf_* dir instead of
+// the auto-discovered newest. Persisted per-workspace via workspaceState.
+let pinnedDir: string | null = null;
+const PINNED_RUN_KEY = 'claudeWorkflow.pinnedRun';
 
 export function getCfg(): Cfg {
   const c = vscode.workspace.getConfiguration('claudeWorkflow');
@@ -25,18 +47,9 @@ export function getCfg(): Cfg {
     refreshMs: Math.max(1000, c.get<number>('refreshMs') || 4000),
     statusBar: c.get<boolean>('statusBar') !== false,
     roleRules: rules && rules.length ? rules : DEFAULT_ROLE_RULES,
+    pinnedDir: pinnedDir ?? undefined,
   };
 }
-
-// --- Module-level state ---
-// TODO(M1): move module-level state into an activation context object to
-// support clean reload — module may be re-used across activate() calls.
-let latest: Snapshot | null = null;
-const webviews = new Set<vscode.Webview>();
-let statusItem: vscode.StatusBarItem | null = null;
-let watcher: fs.FSWatcher | null = null;
-let watchedDir: string | null = null;
-let editorPanel: vscode.WebviewPanel | null = null;
 
 // Strip workflowDir (absolute filesystem path) from any SnapshotOk before
 // sending it to a webview. The webview JS never reads workflowDir, and
@@ -115,12 +128,12 @@ function refresh(cfg?: Cfg): void {
   updateStatusBar();
 }
 
-function attachWebview(webview: vscode.Webview, disposables: vscode.Disposable[]): void {
+function attachWebview(webview: vscode.Webview, disposables: vscode.Disposable[], mode: 'panel' | 'sidebar' = 'panel'): void {
   // localResourceRoots: [] prevents the webview from loading local files via
   // vscode-resource: URIs — all resources are inlined, so no access is needed.
   webview.options = { enableScripts: true, localResourceRoots: [] };
   const nonce = crypto.randomBytes(16).toString('base64');
-  webview.html = getHtml(nonce, CHANGED_MAX_SECS / 60, MAX_AGENTS);
+  webview.html = getHtml(nonce, CHANGED_MAX_SECS / 60, MAX_AGENTS, mode, STALE_SECS);
   webviews.add(webview);
   // Track the message-listener disposable so it is cancelled when the view is
   // disposed (or when the extension deactivates via context.subscriptions).
@@ -129,6 +142,8 @@ function attachWebview(webview: vscode.Webview, disposables: vscode.Disposable[]
     const msg = m as Record<string, unknown>;
     if (msg['type'] === 'refresh') refresh();
     else if (msg['type'] === 'guide') vscode.commands.executeCommand('claudeWorkflow.openGuide');
+    else if (msg['type'] === 'openFull') vscode.commands.executeCommand('claudeWorkflow.open');
+    else if (msg['type'] === 'selectRun') vscode.commands.executeCommand('claudeWorkflow.selectRun');
   });
   disposables.push(msgDisposable);
   if (latest) {
@@ -139,10 +154,65 @@ function attachWebview(webview: vscode.Webview, disposables: vscode.Disposable[]
 class DashboardViewProvider implements vscode.WebviewViewProvider {
   constructor(private readonly ctx: vscode.ExtensionContext) {}
   resolveWebviewView(view: vscode.WebviewView): void {
-    attachWebview(view.webview, this.ctx.subscriptions);
+    // The sidebar pane is narrow; pass mode:'sidebar' so getHtml renders the
+    // compact summary instead of the full six-panel layout.
+    attachWebview(view.webview, this.ctx.subscriptions, 'sidebar');
     view.onDidDispose(() => webviews.delete(view.webview));
     if (!latest) refresh();
   }
+}
+
+async function runSelectRun(ctx: vscode.ExtensionContext): Promise<void> {
+  const cfg = getCfg();
+  const runs = listRecentRuns(cfg.base);
+
+  if (!runs.length) {
+    vscode.window.showInformationMessage(
+      'No workflow runs (wf_*) found under the configured Workflows Glob Base.',
+    );
+    return;
+  }
+
+  // Build QuickPick items: "Follow newest" first, then all runs newest-first.
+  const followItem: vscode.QuickPickItem = {
+    label: '$(arrow-up) Follow newest',
+    description: pinnedDir ? 'Pinned run active — click to unpin' : 'Following newest run automatically',
+    alwaysShow: true,
+  };
+
+  const runItems: (vscode.QuickPickItem & { run: RecentRun })[] = runs.map((r) => {
+    const agents = r.agentCount === 1 ? '1 agent' : `${r.agentCount} agents`;
+    const pinned = pinnedDir === r.dir;
+    return {
+      label: `$(circuit-board) ${r.runId}`,
+      description: `${formatRelativeTime(r.mtimeMs)} · ${agents}${pinned ? '  $(pin)' : ''}`,
+      run: r,
+    };
+  });
+
+  const picked = await vscode.window.showQuickPick(
+    [followItem, ...runItems],
+    {
+      title: 'Select Workflow Run',
+      placeHolder: 'Choose a run to pin, or "Follow newest" to track automatically',
+      matchOnDescription: true,
+    },
+  );
+
+  if (!picked) return; // user dismissed
+
+  if (picked === followItem) {
+    // Reset pin — follow newest
+    pinnedDir = null;
+    await ctx.workspaceState.update(PINNED_RUN_KEY, undefined);
+  } else {
+    // Pin the selected run
+    const item = picked as typeof runItems[number];
+    pinnedDir = item.run.dir;
+    await ctx.workspaceState.update(PINNED_RUN_KEY, pinnedDir);
+  }
+
+  refresh();
 }
 
 function openEditorPanel(): void {
@@ -168,9 +238,12 @@ export function activate(context: vscode.ExtensionContext): void {
   // and reactivate an extension without unloading the module (e.g. F5 in the
   // Extension Development Host). Without a reset, stale Webview and StatusBarItem
   // references from the prior session leak, causing ghost status-bar items and
-  // postMessage() calls to disposed webviews. TODO(M1): move into an activation-context object.
+  // postMessage() calls to disposed webviews. TODO(M2): move into an activation-context object.
   latest = null;
   webviews.clear();
+
+  // Restore the pinned run from workspaceState so the pin survives window reloads.
+  pinnedDir = context.workspaceState.get<string>(PINNED_RUN_KEY) ?? null;
   // Close the fs.FSWatcher before resetting watchedDir. If VS Code re-activates
   // without a prior deactivate() (e.g. F5 in the Extension Development Host),
   // the old watcher would keep firing refresh() callbacks against the new state,
@@ -207,6 +280,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.commands.executeCommand('markdown.showPreview', uri).then(undefined, () =>
         vscode.commands.executeCommand('vscode.open', uri));
     }),
+    vscode.commands.registerCommand('claudeWorkflow.selectRun', () => runSelectRun(context)),
   );
 
   // Self-rescheduling setTimeout so refreshMs is re-read from settings on every

@@ -8,7 +8,9 @@ import { buildSnapshot } from '../src/data/snapshot';
 import { DEFAULT_ROLE_RULES } from '../src/data/parse';
 
 const TRANSCRIPT = '{"type":"user","message":{"content":"You are a test agent"}}\n';
-const JOURNAL = '{"type":"started","agentId":"agent-x"}\n';
+// agentId must match the id extracted from the transcript filename:
+// buildSnapshot strips "agent-" prefix and ".jsonl" suffix from "agent-x.jsonl" → id "x".
+const JOURNAL = '{"type":"started","agentId":"x"}\n';
 
 function makeCfg(base: string) {
   return { base, repo: '', refreshMs: 4000, statusBar: true, roleRules: DEFAULT_ROLE_RULES };
@@ -42,13 +44,13 @@ describe('buildSnapshot TOCTOU guards — filesystem deletion race', () => {
     expect(result.agents.length).toBe(0);
   });
 
-  it('handles readdirSync failure on wfDir (files array stays [])', () => {
-    // Create a valid discovery structure. The wfDir must be a real directory
-    // for findWorkflowDir to find it. We simulate readdirSync failure inside
-    // buildSnapshot by making wfDir unreadable after discovery has already run.
-    // Since we can't intercept the call mid-flow, we verify the guard exists
-    // by pointing base at a path that has no wf_* dirs — coverage comes from
-    // the catch block around readdirSync in the source.
+  it('returns ok:false when base has no wf_* dirs (discovery returns null path)', () => {
+    // Points base at a non-existent path so findWorkflowDir returns null.
+    // This exercises the early-exit ok:false path in _buildSnapshotUnsafe —
+    // NOT the readdirSync(wfDir) catch path. The readdirSync catch is exercised
+    // by the chmod-000 test below; this test covers the null-wfDir branch.
+    // The wfDir created in beforeEach is unused here; it exists only so afterEach
+    // can clean up without special-casing.
     const result = buildSnapshot({ ...makeCfg(tmpBase), base: '/no/such/path' });
     expect(result.ok).toBe(false);
     expect(() => buildSnapshot(makeCfg(tmpBase))).not.toThrow();

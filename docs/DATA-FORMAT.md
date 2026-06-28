@@ -27,7 +27,7 @@ default `~/.claude/projects`). The extension recursively searches for a director
 | --- | --- |
 | `journal.jsonl` | One record per `agent()` call lifecycle event. The source of truth for results. |
 | `agent-<agentId>.jsonl` | Each agent's full transcript (user/assistant turns, tool calls, token usage). |
-| `agent-<agentId>.meta.json` | Optional. Its mtime is used as the agent's **start time** (falls back to the transcript file's mtime). |
+| `agent-<agentId>.meta.json` | Optional. Its mtime is used as the agent **start time** (falls back to the transcript file's mtime). When the file is readable and valid JSON, the `agentType` string field (e.g. `"workflow-plugins:implementer"`) is the primary source for the agent role label — the `workflow-plugins:` namespace prefix is stripped and the remainder looked up in `AGENT_TYPE_MAP` (`parse.ts`). Known types: `implementer`, `architect`, `code-reviewer`, `security-reviewer`, `uiux-reviewer`, `test-verifier`, `completeness-critic`. Unknown or absent `agentType` falls back to `classify()`/`deriveLabel()`. |
 
 `<agentId>` is the substring between `agent-` and `.jsonl`.
 
@@ -105,10 +105,25 @@ For each agent, with `STALE_SECS = 90`:
                "findings?"|"result?"|"resultText?", "verdict?" } ],
   "allFindings": [ { "pass", "reviewer", "key", ...finding } ],
   "structuredResults": [ { "pass", "label", "key", "result" } ],
-  "verdicts": { "<label>": "verdict text" },
+  "verdicts": { "<key>": "verdict text" },         // keyed by agentType key (same key as in allFindings)
+  "verdictLabels": { "<key>": "<display label>" }, // human-readable label for each verdict key (agentType key → display label used in the Verdicts panel)
+  "agentsCapped": false,                           // true when agent count exceeded MAX_AGENTS; webview shows a warning banner
+  "isPinned": false,                               // true when cfg.pinnedDir is set and the pinned dir exists; shown in sidebar runId line and status-bar meta
   "changed": ["relative/path", ...] | null       // files changed in repo in last 120s
 }
 ```
+
+**Note on `workflowDir`**: the host SnapshotOk type includes `workflowDir` (absolute
+path to the `wf_*` dir) but `safeSnap()` in `extension.ts` strips it before every
+`postMessage()` call. The webview never receives this field — this is intentional to
+reduce information-disclosure surface.
+
+**Note on pinning and security**: `cfg.pinnedDir` (set via the "Select Workflow Run"
+picker and persisted in `workspaceState`) is validated in `buildSnapshot()` to resolve
+inside `cfg.base` before use. A `pinnedDir` value that escapes the configured base
+returns `{ ok: false, msg: ... }` rather than reading from an arbitrary path. This
+guards against a tampered `workspaceState` entry redirecting the extension to an
+unintended location.
 
 Preserve this contract during the M0 TypeScript migration — type it, don't reshape
 it, so the webview keeps working unchanged.

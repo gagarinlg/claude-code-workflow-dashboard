@@ -62,44 +62,44 @@ tests, or `.github/`.
 
 ---
 
-## M1 — Robustness & navigation  ⬅ START HERE
+## ✅ M1 — Robustness & navigation  (DONE)
 
 *Goal: it behaves well on a stranger's machine and across many runs.*
 
-- [ ] **Defensive everywhere:** wrap all `fs`/`JSON` access so a bad run yields
+- [x] **Defensive everywhere:** wrap all `fs`/`JSON` access so a bad run yields
       `{ok:false, msg}`, not an exception. Add tests for each failure mode.
-- [ ] **Friendly empty state** in the webview when `ok:false`: explain "no Workflow
+- [x] **Friendly empty state** in the webview when `ok:false`: explain "no Workflow
       run found under <base>", how to start one (link the authoring guide), and the
       configured base dir, with a Refresh button. Status bar shows the idle state.
-- [ ] **Recent-runs picker:** list all `wf_*` dirs (newest first) with run id +
+- [x] **Recent-runs picker:** list all `wf_*` dirs (newest first) with run id +
       relative time + agent count; a command `claudeWorkflow.selectRun` (and a
       view-title dropdown) to pin one. Default remains "follow newest". Persist the
       pin per-workspace; "Follow newest" resets it.
-- [ ] **Replace `DEFAULT_ROLE_RULES`** with a neutral generic set keyed off common
+- [x] **Replace `DEFAULT_ROLE_RULES`** with a neutral generic set keyed off common
       workflow vocabulary, e.g. review / verify / fix / research / judge / synthesize
       / plan. The author's crm-notes rules move to personal `claudeWorkflow.roleRules`
       (document this in the release notes). Auto-derivation stays the fallback.
 
 ### Discovered during M0 dogfooding (detail in `.review-tmp/implementation-plan.md`)
 
-- [ ] **Agent naming via `agentType` (M1-Naming)** — derive role labels from the reliable
+- [x] **Agent naming via `agentType` (M1-Naming)** — derive role labels from the reliable
       `agentType` in `agent-<id>.meta.json` (implementer→Implement/Fix, architect→Architecture,
       code-reviewer→Code review, security-reviewer→Security, uiux-reviewer→UI/UX,
       test-verifier→Verify, completeness-critic→Completeness; strip the `workflow-plugins:`
       namespace). `buildSnapshot` already opens `meta.json` for `start`. Prompt regex +
       `roleRules` become the FALLBACK only. **This supersedes the prompt-matching tactic** —
       regex-on-prompt collapses all reviewers to "reviewer" and even mislabels implementers.
-- [ ] **Pass-numbering fix (M1-Naming side-effect)** — `buildSnapshot` computes `pass` as a
+- [x] **Pass-numbering fix (M1-Naming side-effect)** — `buildSnapshot` computes `pass` as a
       per-`key` counter, so today (all reviewers share one key) the 4 reviewers in ONE round
       show as 4 different passes. Distinct per-`agentType` keys make `pass` = the review round
       per reviewer. AC: one round → same pass for all reviewers; same reviewer across rounds
       increments.
-- [ ] **Sidebar UX (M1-SidebarUX)** — the sidebar webview crams the whole dashboard into the
+- [x] **Sidebar UX (M1-SidebarUX)** — the sidebar webview crams the whole dashboard into the
       activity-bar pane. Render a compact summary in the sidebar (`mode:'sidebar'`) + a
       prominent "⤢ Open full dashboard" button (posts `{type:'openFull'}` → `claudeWorkflow.open`)
       + a `view/title` icon. (An activity-bar icon can't open an editor tab directly — hence
       the button, decided with the user.)
-- [ ] **Clear-filters availability (M1-ClearFilters)** — move the findings-panel "Clear filters"
+- [x] **Clear-filters availability (M1-ClearFilters)** — move the findings-panel "Clear filters"
       button out of the empty-result branch so it shows whenever ANY chip is off (use the
       existing `anyOff` flag), not only when the (sole) reviewer chip empties the list.
 
@@ -108,7 +108,7 @@ Extension Host log); a malformed journal still renders; switching among ≥2 rec
 runs works; agent labels are correct and distinct (reviewers by specialty, implementers
 as Implement/Fix — never a generic "reviewer"); one review round shows one pass number.
 
-> **Before starting M1:** restart Claude Code so the `workflow-plugins` plugin reloads at
+> **Before starting M2:** restart Claude Code so the `workflow-plugins` plugin reloads at
 > **v4.6.1** (verify-first review order). Also: **do not edit the working tree while a
 > `workflow-live` run is active** — concurrent edits made the M0 review loops fail to
 > converge (reviewers chase a moving target). Freeze the tree per run.
@@ -118,7 +118,7 @@ as Implement/Fix — never a generic "reviewer"); one review round shows one pas
 
 ---
 
-## M2 — Metrics + Markdown export
+## M2 — Metrics + Markdown export  ⬅ START HERE
 
 *Goal: quantify a run and get it out of the editor. **No pricing.***
 
@@ -134,10 +134,40 @@ as Implement/Fix — never a generic "reviewer"); one review round shows one pas
       per-agent metrics table. Offer **Save to file** and **Copy to clipboard**.
 - [ ] Snapshot already carries everything needed — build the report from `latest`,
       don't re-read disk.
+- [ ] **View full agent prompt (M2-AgentPrompt):** surface each agent's complete
+      initiating prompt (its first user message / instructions) in the agent card —
+      a **"Prompt"** disclosure alongside the existing output / findings / activity
+      tail. `firstUserText` (`src/data/parse.ts`) already extracts this text for
+      label derivation; carry the **full** prompt through `buildSnapshot` per agent
+      (guard size — workflow prompts can embed large findings JSON, so render it in a
+      capped, scrollable `<pre>` with a **Copy** button) and `esc()` it before
+      injecting into the webview. This is the inspection tool that would have made the
+      M1 role-mislabelling incident (a Fix agent tagged "Compliance" because its
+      prompt embedded a finding's text) obvious at a glance. Read-only; theme-native
+      (`--vscode-*`); fold state persists with M2-AgentFold. Add a `buildSnapshot`
+      test asserting the prompt is carried and a `getHtml` test asserting the
+      disclosure renders and is escaped.
+- [ ] **Typed result displays for every agent type (M2-TypedResults):** today only
+      reviewers get a rich rendering (the findings panel — severity / title / why /
+      fix); every other agent's structured output falls back to a raw-JSON `<pre>` in
+      the Results panel and agent card (`agentSub()` / `resultsPanel()` in
+      `src/webview/html.ts`). Give each agent type a tailored, readable view of its
+      structured result — keyed off the `agentType` that **M1-Naming** now resolves —
+      mirroring the findings treatment. E.g. implementer → files-changed list +
+      summary + tests/fixed counts; test-verifier → pass/fail + coverage gaps; judge →
+      verdict + score + rationale; completeness-critic → gaps. **Workflow-agnostic:**
+      ship renderers for the known result shapes plus a graceful generic fallback (a
+      pretty key/value table, never a bare JSON dump) for unknown agent types/shapes.
+      `buildSnapshot` already carries `structuredResults` + each agent's `result` —
+      render from `latest`, don't re-read disk; `esc()` every transcript-derived value;
+      theme-native (`--vscode-*`). Add a `getHtml` test per known shape and one for the
+      fallback.
 
 **Acceptance:** counts match a hand-check of a sample run; charts render across
 1..N agents; the exported Markdown round-trips into a GitHub issue/PR cleanly and
-contains every finding/verdict.
+contains every finding/verdict; each agent's full initiating prompt is viewable
+(and copyable) from its card without re-reading disk; every agent type's structured
+output renders in a tailored, readable view (with a generic fallback) — never raw JSON.
 
 ---
 

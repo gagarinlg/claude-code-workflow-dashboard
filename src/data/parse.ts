@@ -1,9 +1,41 @@
 import * as fs from 'fs';
 
-export const STALE_SECS = 90;
+export const STALE_SECS = 180;
+
+// Known agentType → { label, key } mapping.
+// agentType comes from agent-<id>.meta.json and is the most reliable role signal —
+// it is set by the workflow author, not derived heuristically from prompt text.
+// Strip the 'workflow-plugins:' namespace prefix before lookup.
+// Returns null when agentType is absent, empty, or not in this map (caller falls
+// back to classify() / deriveLabel()).
+export interface AgentTypeLabel {
+  label: string;
+  key: string;
+}
+
+const AGENT_TYPE_MAP: Readonly<Record<string, AgentTypeLabel>> = {
+  'implementer':          { label: 'Implement/Fix',  key: 'implementer' },
+  'architect':            { label: 'Architecture',   key: 'architect' },
+  'code-reviewer':        { label: 'Code review',    key: 'code_reviewer' },
+  'security-reviewer':    { label: 'Security',       key: 'security_reviewer' },
+  'uiux-reviewer':        { label: 'UI/UX',          key: 'uiux_reviewer' },
+  'test-verifier':        { label: 'Verify',         key: 'test_verifier' },
+  'completeness-critic':  { label: 'Completeness',   key: 'completeness_critic' },
+};
+
+// Strip the optional 'workflow-plugins:' namespace prefix that the Claude Code
+// workflow plugin emits in agentType, then look up the clean type in AGENT_TYPE_MAP.
+// Returns null when agentType is absent, empty, or unrecognised.
+export function agentTypeToLabel(agentType: unknown): AgentTypeLabel | null {
+  if (typeof agentType !== 'string' || !agentType) return null;
+  // Strip namespace prefix (e.g. 'workflow-plugins:implementer' → 'implementer').
+  const clean = agentType.replace(/^[^:]+:/, '');
+  return AGENT_TYPE_MAP[clean] ?? null;
+}
 
 // Default role-labelling rules — neutral generic set covering common Claude Code
 // workflow patterns. Matched against the first line of each agent's first user prompt.
+// Used ONLY as fallback when agentType is absent or unknown (see agentTypeToLabel above).
 // Users with workflow-specific roles should configure claudeWorkflow.roleRules in
 // VS Code settings instead of relying on these defaults.
 // Example user setting for a custom review workflow:
@@ -17,6 +49,8 @@ export const DEFAULT_ROLE_RULES: RoleRule[] = [
   { re: 'You are.*(verif|tester|test)', label: 'Verifier', key: 'verify' },
   { re: 'You are.*(plan|architect|designer)', label: 'Planner', key: 'plan' },
   { re: 'You are.*(research|investigat)', label: 'Researcher', key: 'research' },
+  { re: 'You are.*(judge|judg)', label: 'Judge', key: 'judge' },
+  { re: 'You are.*(synthesiz|summariz)', label: 'Synthesizer', key: 'synthesize' },
 ];
 
 export interface RoleRule {
@@ -122,7 +156,10 @@ export const MAX_ROLE_RULE_RE_LEN = 500;
 // the Node.js event loop for the full duration before this guard fires.
 // The length cap (MAX_ROLE_RULE_RE_LEN) is the primary defence; this guard
 // is a trip-wire for patterns that slip past it, not a true deadline.
-// For a true deadline a worker_threads approach would be needed (TODO M1).
+// For a true deadline a worker_threads approach would be needed (TODO(M2)).
+// Deferred from M1: the structural ReDoS guard (REDOS_DANGER_RE) plus the
+// length cap already block all known catastrophic patterns; worker_threads
+// isolation is a defence-in-depth improvement tracked in ROADMAP §M2.
 // See the TOCTOU pattern in snapshot.ts for the analogous c8 ignore usage.
 const CLASSIFY_MATCH_TIMEOUT_MS = 50;
 
@@ -132,18 +169,19 @@ const CLASSIFY_MATCH_TIMEOUT_MS = 50;
 // and are rejected. The pattern covers capturing groups, non-capturing (?:…),
 // named (?<name>…), lookahead (?=…), and negative lookahead (?!…) prefixes.
 // This heuristic catches the common cases that slip past the length cap.
-// Note: this is a best-effort safety valve — worker_threads isolation (TODO M1)
+// Note: this is a best-effort safety valve — worker_threads isolation (TODO(M2))
 // is the correct long-term fix for user-supplied patterns. Coverage gaps remain
 // for exotic alternation forms like (a|a)+ — the elapsed-time check is the
 // secondary trip-wire for patterns that evade this structural guard.
+// eslint-disable-next-line security/detect-unsafe-regex -- this IS the ReDoS guard pattern, not a vulnerable regex
 const REDOS_DANGER_RE = /\((?:\?(?::|<[^>]+>|=|!))?[^)]*[+*{][^)]*\)[+*?{]/;
 
 export function classify(text: string, roleRules: RoleRule[]): ClassifyResult {
   // Match role rules against ONLY the first line — the agent's role declaration
-  // (e.g. "You are the viktor reviewer (architect) …"). Matching the whole prompt
-  // mislabels agents whose body embeds other roles' text: a Fritz fix prompt embeds
-  // the findings JSON, so a finding mentioning "NEXTCLOUD APP-STORE REVIEWER" used to
-  // trip the Compliance rule. Legitimate role declarations live on the first line, so
+  // (e.g. "You are the reviewer (architect) …"). Matching the whole prompt
+  // mislabels agents whose body embeds other roles' text: a fix-prompt embeds
+  // the findings JSON, so a finding whose text embeds another role's keywords used to
+  // trip the wrong rule. Legitimate role declarations live on the first line, so
   // this preserves intended matches while ignoring embedded data. (M1 #2.)
   const head = text.split('\n', 1)[0] ?? '';
   for (const r of roleRules) {
@@ -154,6 +192,7 @@ export function classify(text: string, roleRules: RoleRule[]): ClassifyResult {
     if (REDOS_DANGER_RE.test(r.re)) continue;
     try {
       const start = Date.now();
+      // eslint-disable-next-line security/detect-non-literal-regexp -- user-supplied pattern, guarded by length cap + structural check + elapsed-time trip-wire above
       const matched = new RegExp(r.re, 'i').test(head);
       /* c8 ignore next */ // ReDoS guard: timing-dependent path; untestable without Date.now mocking — see TOCTOU pattern in snapshot.ts
       if (Date.now() - start > CLASSIFY_MATCH_TIMEOUT_MS) continue;

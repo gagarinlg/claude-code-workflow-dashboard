@@ -42,14 +42,14 @@ breadth). We differentiate on focus and signal, not surface area.
   webview.
 - **vitest** unit tests under `test/`, with a 90 % coverage gate on `src/data/**` and `src/webview/**`.
 - **ESLint** flat config (`eslint.config.mjs`, `typescript-eslint`).
-- `@nextcloud`-free; only the `vscode` API + Node `fs/os/path`.
+- No third-party runtime dependencies; only the `vscode` API + Node `fs/os/path`.
 - Engines: `vscode ^1.84.0`, `node >=18.0.0`.
 
 ## Layout (post-M0)
 
 ```
 src/extension.ts          Activation / host wiring: commands, views, status bar, watcher, timer.
-src/data/discovery.ts     findWorkflowDir (+ future recent-runs listing).
+src/data/discovery.ts     findWorkflowDir, listRecentRuns, formatRelativeTime.
 src/data/parse.ts         jload, firstUserText, deriveLabel, classify, agentStats, sevCounts.
 src/data/snapshot.ts      buildSnapshot + Snapshot types (mirrors docs/DATA-FORMAT.md).
 src/data/changed.ts       walkChanged.
@@ -61,8 +61,8 @@ eslint.config.mjs         ESLint flat config (typescript-eslint).
 tsconfig.json             TypeScript strict config.
 scripts/typecheck.mjs     tsc --noEmit wrapper (TS18003 suppression is a now-dormant safety net; src/ always exists post-M0).
 test/                     Vitest unit tests (*.test.ts) + fixtures/ (wf_basic, wf_partial, base).
-                          Files: changed, discovery, extension-invariants, html, m0-acceptance, parse, snapshot, snapshot-toctou.
-                          **Review scope note**: all 8 test files must be included in every review round.
+                          Files: changed, defensive, discovery, extension-invariants, html, html-syntax, m0-acceptance, m1-pinned-run, parse, snapshot, snapshot-toctou.
+                          **Review scope note**: all 11 test files must be included in every review round.
                           extension-invariants.test.ts in particular covers FSWatcher cleanup on re-activation,
                           safeSnap workflowDir stripping, GPL-3.0-or-later license, command-id constraints,
                           and coverage gates — do not omit it from review scope.
@@ -85,15 +85,28 @@ PUBLISHING.md             LOCAL-ONLY release runbook — gitignored, never commi
 - `findWorkflowDir(base)` (`src/data/discovery.ts`) — recursively finds the `wf_*`
   dir whose parent is named `workflows` with the **highest mtime**. Returns the
   single globally-newest run with **no date filter**.
-- `jload(p)` (`src/data/parse.ts`) — tolerant JSONL parse (skips blank/partial trailing lines).
+- `listRecentRuns(base)` (`src/data/discovery.ts`) — collects ALL `wf_*` dirs under
+  base, stats each, counts agent files, returns sorted newest-first. Used by the run
+  picker (`runSelectRun` in `extension.ts`). `formatRelativeTime(mtimeMs)` formats an
+  mtime as a human-readable relative string (`"3s ago"`, `"5m ago"`, etc.).
+- `jload(p)` (`src/data/parse.ts`) — tolerant JSONL parse (skips blank/partial trailing lines); files larger than 10 MiB (`MAX_JSONL_BYTES`) are skipped entirely to prevent blocking the Extension Host event loop.
 - `classify()` / `deriveLabel()` (`src/data/parse.ts`) — turn an agent's first user
-  prompt into a role label. `DEFAULT_ROLE_RULES` are currently **hardcoded to the
-  author's crm-notes review loop** and must be replaced with a neutral generic set (M1).
+  prompt into a role label. `DEFAULT_ROLE_RULES` is a neutral generic set covering
+  review/fix/verify/plan/research/judge/synthesize vocabulary. `agentType` from
+  `agent-<id>.meta.json` is the primary role signal (see `agentTypeToLabel()` in
+  `parse.ts`); `classify()` + `roleRules` is the fallback, matching only the first
+  line of the prompt (M1). User-supplied `roleRules` are guarded by `MAX_ROLE_RULE_RE_LEN`
+  (500-char length cap) and `REDOS_DANGER_RE` (structural check for quantified-group-over-quantified-atom
+  catastrophic backtracking patterns) before any `RegExp` is constructed.
 - `agentStats()` (`src/data/parse.ts`) — sums `output_tokens`, counts `tool_use`,
   builds the activity tail.
-- `buildSnapshot(cfg)` (`src/data/snapshot.ts`) — the heart: returns
-  `{ok, runId, loop, agents, allFindings, structuredResults, verdicts, changed}` or
-  `{ok:false, msg}`.
+- `buildSnapshot(cfg)` (`src/data/snapshot.ts`) — the heart: returns a `SnapshotOk`
+  with fields `{ok, runId, workflowDir, updatedAt, loop, labels, agents, agentsCapped,
+  allFindings, structuredResults, verdicts, verdictLabels, isPinned, changed}` or
+  `{ok:false, msg}`. See `SnapshotOk` type in `snapshot.ts` and `docs/DATA-FORMAT.md`
+  for the full field contract. (`workflowDir` is stripped by `safeSnap()` before
+  webview delivery; `verdictLabels` maps agentType keys to display labels;
+  `isPinned` reflects whether a pinned run dir is in use.)
 - Host wiring: `activate()` (`src/extension.ts`) registers the sidebar `WebviewView`,
   the editor panel, commands, the status-bar item, an `fs.watch` on the run dir, and
   a polling timer.

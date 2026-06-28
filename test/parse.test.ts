@@ -7,6 +7,7 @@ import {
   classify,
   agentStats,
   sevCounts,
+  agentTypeToLabel,
   DEFAULT_ROLE_RULES,
   MAX_ROLE_RULE_RE_LEN,
   MAX_JSONL_BYTES,
@@ -252,6 +253,41 @@ describe('classify', () => {
     // Falls through to deriveLabel, which extracts 'planner' from the first line.
     expect(result.label).toBe('planner');
   });
+
+  it('resolves to Fix when a fix-style prompt embeds findings JSON containing reviewer-role keywords', () => {
+    // AC: classify() must scope matching to the role-declaration line only.
+    // A Fritz/implementer prompt starts with "You are Fritz … fix" on line 1,
+    // then its body embeds findings JSON that contains reviewer-role keywords
+    // (e.g. "You are the code reviewer", "COMPLIANCE REVIEWER", "reviewer").
+    // The correct label is Fix, not Reviewer or any other reviewer role.
+    const fixPrompt = [
+      'You are Fritz "The Craftsman" Bauer — senior developer. Fix all findings.',
+      '',
+      'Findings from reviewers:',
+      '{"title":"Auth bypass","severity":"CRITICAL","reviewer":"You are the code reviewer"}',
+      '{"title":"XSS in output","severity":"HIGH","reviewer":"You are a compliance reviewer"}',
+      'The reviewer noted: "You are the security reviewer responsible for these findings."',
+    ].join('\n');
+
+    const result = classify(fixPrompt, DEFAULT_ROLE_RULES);
+    // Must match the fix/implement rule from line 1, not the reviewer rules from the body
+    expect(result.label).toBe('Implementer');
+    expect(result.key).toBe('fix');
+  });
+
+  it('resolves to Judge when "You are the judge" appears on the first line', () => {
+    const result = classify('You are the judge of the following outputs', DEFAULT_ROLE_RULES);
+    expect(result.label).toBe('Judge');
+    expect(result.key).toBe('judge');
+  });
+
+  it('resolves to Synthesizer when "You are the synthesizer" appears on the first line', () => {
+    // Use a prompt that does not incidentally contain words matching earlier rules
+    // (e.g. avoid "research" — the research rule fires first in DEFAULT_ROLE_RULES order).
+    const result = classify('You are the synthesizer of all outputs', DEFAULT_ROLE_RULES);
+    expect(result.label).toBe('Synthesizer');
+    expect(result.key).toBe('synthesize');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -405,15 +441,101 @@ describe('sevCounts', () => {
 });
 
 // ---------------------------------------------------------------------------
+// agentTypeToLabel
+// ---------------------------------------------------------------------------
+describe('agentTypeToLabel', () => {
+  // Map of all 7 known agentTypes to their expected label and key, both with
+  // and without the 'workflow-plugins:' namespace prefix.
+  const cases: Array<{ input: string; label: string; key: string }> = [
+    { input: 'implementer',                     label: 'Implement/Fix',  key: 'implementer' },
+    { input: 'workflow-plugins:implementer',     label: 'Implement/Fix',  key: 'implementer' },
+    { input: 'architect',                        label: 'Architecture',   key: 'architect' },
+    { input: 'workflow-plugins:architect',        label: 'Architecture',   key: 'architect' },
+    { input: 'code-reviewer',                    label: 'Code review',    key: 'code_reviewer' },
+    { input: 'workflow-plugins:code-reviewer',   label: 'Code review',    key: 'code_reviewer' },
+    { input: 'security-reviewer',                label: 'Security',       key: 'security_reviewer' },
+    { input: 'workflow-plugins:security-reviewer', label: 'Security',     key: 'security_reviewer' },
+    { input: 'uiux-reviewer',                    label: 'UI/UX',          key: 'uiux_reviewer' },
+    { input: 'workflow-plugins:uiux-reviewer',   label: 'UI/UX',          key: 'uiux_reviewer' },
+    { input: 'test-verifier',                    label: 'Verify',         key: 'test_verifier' },
+    { input: 'workflow-plugins:test-verifier',   label: 'Verify',         key: 'test_verifier' },
+    { input: 'completeness-critic',              label: 'Completeness',   key: 'completeness_critic' },
+    { input: 'workflow-plugins:completeness-critic', label: 'Completeness', key: 'completeness_critic' },
+  ];
+
+  for (const { input, label, key } of cases) {
+    it(`maps "${input}" → label="${label}", key="${key}"`, () => {
+      const result = agentTypeToLabel(input);
+      expect(result).not.toBeNull();
+      expect(result!.label).toBe(label);
+      expect(result!.key).toBe(key);
+    });
+  }
+
+  it('returns null for an unknown agentType string', () => {
+    expect(agentTypeToLabel('unknown-robot')).toBeNull();
+    expect(agentTypeToLabel('workflow-plugins:unknown-robot')).toBeNull();
+  });
+
+  it('returns null for an empty string', () => {
+    expect(agentTypeToLabel('')).toBeNull();
+  });
+
+  it('returns null for non-string inputs (null, undefined, number, object)', () => {
+    expect(agentTypeToLabel(null)).toBeNull();
+    expect(agentTypeToLabel(undefined)).toBeNull();
+    expect(agentTypeToLabel(42)).toBeNull();
+    expect(agentTypeToLabel({})).toBeNull();
+  });
+
+  it('strips any single-segment namespace prefix (colon-delimited)', () => {
+    // A hypothetical other-namespace prefix is stripped the same way.
+    // 'other-ns:implementer' → 'implementer' → matches.
+    const result = agentTypeToLabel('other-ns:implementer');
+    expect(result).not.toBeNull();
+    expect(result!.label).toBe('Implement/Fix');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // constants
 // ---------------------------------------------------------------------------
 describe('constants', () => {
-  it('STALE_SECS is 90', () => {
-    expect(STALE_SECS).toBe(90);
+  it('STALE_SECS is 180', () => {
+    expect(STALE_SECS).toBe(180);
   });
 
   it('DEFAULT_ROLE_RULES is non-empty array', () => {
     expect(Array.isArray(DEFAULT_ROLE_RULES)).toBe(true);
     expect(DEFAULT_ROLE_RULES.length).toBeGreaterThan(0);
+  });
+
+  it('DEFAULT_ROLE_RULES covers all 7 neutral vocabulary terms (review/fix/verify/plan/research/judge/synthesize)', () => {
+    // Guard: ensure no neutral term is accidentally removed. Each term must appear
+    // in at least one rule's re or label (case-insensitive).
+    const allRuleText = DEFAULT_ROLE_RULES
+      .map(r => `${r.re} ${r.label} ${r.key ?? ''}`)
+      .join(' ')
+      .toLowerCase();
+    const required = ['review', 'fix', 'verif', 'plan', 'research', 'judge', 'synthesiz'];
+    for (const term of required) {
+      expect(allRuleText, `DEFAULT_ROLE_RULES must contain a rule covering "${term}"`).toContain(term);
+    }
+  });
+
+  it('DEFAULT_ROLE_RULES uses only neutral, generic role labels', () => {
+    // Shipped defaults must stay neutral: every rule maps to a generic workflow
+    // role, never an author- or project-specific label/term that would vary per
+    // workflow or project. An allow-list (rather than a bl) keeps this guard
+    // from having to name the very strings it forbids.
+    const allowedLabels = new Set([
+      'Reviewer', 'Implementer', 'Verifier', 'Planner', 'Researcher', 'Judge', 'Synthesizer',
+    ]);
+    for (const r of DEFAULT_ROLE_RULES) {
+      expect(
+        allowedLabels.has(r.label),
+        `DEFAULT_ROLE_RULES has a non-generic label "${r.label}"`,
+      ).toBe(true);
+    }
   });
 });

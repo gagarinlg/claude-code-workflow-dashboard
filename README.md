@@ -11,9 +11,10 @@ active without any per-workflow setup.
 
 ## Features
 
-- **One-click access** — a live **status-bar item** (bottom-left) shows the
-  current phase and agent counts; click it to open the dashboard. There's also
-  an **Activity Bar icon** and the keybinding **`Ctrl/Cmd+Alt+W`**.
+- **One-click access** — a live **status-bar item** (bottom-left, shows a pulse
+  or circuit-board icon depending on whether agents are active) shows the current
+  phase and agent counts; click it to open the dashboard. There's also an
+  **Activity Bar icon** and the keybinding **`Ctrl/Cmd+Alt+W`**.
 - **Loop & agent overview** — phase, pass number, live/done/dead agent counts,
   total output tokens, tool-calls, and findings with a severity breakdown.
 - **Agent sub-windows** — one card per agent (role, status, elapsed time, token
@@ -27,6 +28,10 @@ active without any per-workflow setup.
   remembered.
 - **Live updates** — refreshes instantly on workflow file changes (and on a
   configurable interval), preserving your scroll position.
+- **Run picker** — pin any recent workflow run via the **Select Workflow Run…**
+  command (view-title icon or Command Palette). Default remains "Follow newest";
+  selecting a run pins it per workspace. Choose **"Follow newest"** at the top
+  of the picker to unpin.
 
 ## Getting started
 
@@ -34,13 +39,15 @@ Open the dashboard any of these ways:
 
 | Method | How |
 | --- | --- |
-| Status bar | Click **“⚡ Workflow …”** at the bottom-left |
+| Status bar | Click the **Workflow Dashboard** status-bar item at the bottom-left |
 | Activity Bar | Click the **Claude Workflow** icon, then the **Dashboard** view |
 | Keyboard | **`Ctrl+Alt+W`** (macOS: `Cmd+Alt+W`) |
-| Command Palette | **“Claude Workflow: Show Dashboard”** or **“… Open Dashboard in Editor”** |
+| Command Palette | **”Claude Workflow: Show Dashboard”** or **”… Open Dashboard in Editor”** |
 
-The dashboard auto-discovers the most recent workflow run under
-`~/.claude/projects`. No configuration is required.
+The dashboard auto-discovers the most recent workflow run under `~/.claude/projects`
+by default — no configuration required. To pin a specific run, use
+**”Claude Workflow: Select Workflow Run…”** from the Command Palette or the
+view-title icon in the Dashboard sidebar pane.
 
 ## Authoring workflows for this dashboard
 
@@ -62,7 +69,7 @@ Open it without leaving the editor:
 | `claudeWorkflow.repoDir` | first workspace folder | Repo whose recently-changed files appear in the **Changed files** panel. |
 | `claudeWorkflow.refreshMs` | `4000` | Fallback refresh interval (it also refreshes on file changes). |
 | `claudeWorkflow.statusBar` | `true` | Show the live status-bar launcher. |
-| `claudeWorkflow.roleRules` | `[]` | Optional `{re,label,key}[]` to label agents per workflow; otherwise labels are derived from each agent's prompt. |
+| `claudeWorkflow.roleRules` | `[]` | Optional `{re,label,key}[]` to label agents per workflow. `agentType` from `agent-*.meta.json` is the primary label source; `roleRules` + `classify()` is the fallback for agents without a known `agentType`. |
 
 ## How it works
 

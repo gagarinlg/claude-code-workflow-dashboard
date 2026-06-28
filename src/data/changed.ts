@@ -6,6 +6,10 @@ import * as path from 'path';
 // directories may continue processing their remaining entries. In practice
 // this bounds the walk to roughly O(WALK_FILE_LIMIT) file stats across typical
 // repo shapes. The 30-entry cap on the output is unaffected.
+// Note: actual visited count may exceed WALK_FILE_LIMIT when the limit is hit
+// mid-directory — the early return exits that frame only; sibling directories
+// at parent levels continue. Overshoot is bounded by the number of entries in
+// the current directory batch when the limit fires.
 const WALK_FILE_LIMIT = 5000;
 
 // Walk the repo directory and return files modified within maxAgeSec seconds,
@@ -19,7 +23,8 @@ export function walkChanged(repo: string, maxAgeSec: number): string[] | null {
   const out: string[] = [];
   let visited = 0;
   // Depth limit prevents call-stack exhaustion on pathologically deep trees or
-  // (on Windows) junction-point cycles. 15 levels covers all realistic repo structures.
+  // (on Windows) junction-point cycles. 16 levels (0 through 15 inclusive) covers
+  // all realistic repo structures.
   const walk = (dir: string, depth = 15): void => {
     /* c8 ignore next */ // Depth guard: only reachable after 16 levels of nesting — not worth constructing a fixture
     if (depth < 0) return;
@@ -30,8 +35,9 @@ export function walkChanged(repo: string, maxAgeSec: number): string[] | null {
       return;
     }
     for (const e of entries) {
-      // File-count soft limit: exits the current directory frame once the
-      // visited limit is reached. Parent frames continue their remaining entries.
+      // File-count soft limit: exits the current directory frame once the visited
+      // limit is reached. Parent frames continue their remaining entries (see
+      // WALK_FILE_LIMIT comment above for overshoot bounds).
       if (visited >= WALK_FILE_LIMIT) return;
       const p = path.join(dir, e.name);
       // Skip symlinks to avoid following loops or escaping the repo tree.

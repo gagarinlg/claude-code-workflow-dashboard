@@ -1,5 +1,91 @@
 # Change Log
 
+## [0.6.0] — 2026-06-28
+
+### M1-Naming
+
+- **`agentType` is now the primary agent role signal.** `buildSnapshot` reads
+  `agent-<id>.meta.json` and calls `agentTypeToLabel()` before falling back to
+  `classify()`. The `workflow-plugins:` namespace prefix is stripped; known types
+  are mapped via `AGENT_TYPE_MAP`: `implementer` → Implement/Fix, `architect` →
+  Architecture, `code-reviewer` → Code review, `security-reviewer` → Security,
+  `uiux-reviewer` → UI/UX, `test-verifier` → Verify, `completeness-critic` →
+  Completeness. Unknown or absent `agentType` falls back to `classify()`/`deriveLabel()`.
+- **Pass-numbering fix.** The pass counter is now keyed per `agentType` key so all
+  reviewers in one round share `pass=1`, not 1/2/3/4. The same reviewer type across
+  two rounds increments to `pass=2` as expected.
+
+### M1-Defensive
+
+- **All `fs` and `JSON` access is wrapped** so any bad or missing run directory,
+  journal, or transcript degrades to `{ok:false, msg}` — no exception ever reaches
+  the Extension Host log or the UI.
+- **`jload` size guard**: JSONL files larger than 10 MB are skipped entirely
+  (silent degradation). No per-line size guard exists; no logging is performed.
+- **Agent transcript disappears mid-scan**: `statSync` failures on transcript files
+  are caught per-agent with `continue` so one missing or unreadable file does not
+  abort the entire snapshot.
+
+### M1-EmptyState
+
+- **Friendly `ok:false` state** in the webview: shows a headed card with a
+  `data-testid="empty-state"` container, the error/discovery message via
+  `esc(snap.msg)` in a quoted block, a hint pointing to the Workflows Glob Base
+  setting, a **Refresh** button, and an **Open Authoring Guide** button.
+- **Status bar idle state**: when no run is found the status bar shows
+  `$(circuit-board) Workflow Dashboard` with tooltip "No active workflow run found".
+
+### M1-RecentRuns
+
+- **`claudeWorkflow.selectRun` command** — opens a Quick Pick listing all `wf_*`
+  dirs under the configured base, newest first, with relative time (`"3m ago"`) and
+  agent-file count. Selecting a run pins it for the current workspace; a
+  **"$(sync) Follow newest"** item at the top resets the pin.
+- **Pin persistence**: the selected run dir is stored in `workspaceState` under
+  `claudeWorkflow.pinnedRun` and restored on every `activate()`.
+- **`listRecentRuns(base)`** and **`formatRelativeTime(mtimeMs)`** are new exports
+  from `src/data/discovery.ts` used by the run picker.
+
+### M1-SidebarUX
+
+- **Compact sidebar mode** (`mode:'sidebar'`): `getHtml()` now accepts a `mode`
+  parameter. In sidebar mode a focused summary is rendered — run ID, phase, live/
+  done/stalled KPI row, active-agent list (up to 5), and severity breakdown — with
+  no horizontal overflow at default sidebar width.
+- **"⤢ Open full dashboard" button** in the sidebar header posts `{type:'openFull'}`
+  to the host, which executes `claudeWorkflow.open`. A view-title icon also opens
+  the full panel directly.
+- **`DashboardViewProvider`** registered as the `claudeWorkflow.dashboard`
+  WebviewView; uses `attachWebview(…, 'sidebar')`.
+
+### M1-ClearFilters
+
+- **"Clear filters" always visible when any chip is off.** The button is now
+  rendered in the filter bar (not in the empty-result branch) using the existing
+  `anyOff` flag, so it appears whenever at least one reviewer or severity chip is
+  deactivated — regardless of whether the filtered list is empty.
+
+### M1-RoleRules
+
+- **`DEFAULT_ROLE_RULES` is now a neutral generic set** covering the seven common
+  Claude Code workflow vocabulary terms: `review`, `fix`/`implement`, `verify`,
+  `plan`/`architect`, `research`, `judge`, and `synthesize`. No author- or
+  project-specific rules are shipped with the extension.
+- **`classify()` now matches role rules against only the first line** of each
+  agent's opening prompt (the role-declaration line, e.g. `You are Fritz … fix`).
+  Previously the entire prompt body was searched, which caused agents whose prompts
+  embed findings JSON from other agents to be mislabelled (e.g. a Fix agent tagged
+  as "Reviewer" because a quoted finding said "You are the code reviewer").
+- **Migrating personal role rules:** if you previously relied on custom role rules
+  baked into your workflow prompt, move them to the `claudeWorkflow.roleRules`
+  VS Code setting. Example:
+  ```json
+  "claudeWorkflow.roleRules": [
+    { "re": "You are.*the lead reviewer", "label": "Lead Reviewer", "key": "lead" },
+    { "re": "You are.*implementing", "label": "Implementer", "key": "impl" }
+  ]
+  ```
+
 ## 0.5.0
 
 - **TypeScript migration:** converted `extension.js` to TypeScript (`strict` mode)

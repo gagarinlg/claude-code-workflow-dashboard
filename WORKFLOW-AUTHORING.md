@@ -142,7 +142,7 @@ against each agent's first prompt:
 
 ```json
 "claudeWorkflow.roleRules": [
-  { "re": "fixing a Nextcloud app", "label": "Fix", "key": "fix" },
+  { "re": "fixing review findings", "label": "Fix", "key": "fix" },
   { "re": "build/test verifier",    "label": "Verify", "key": "verify" },
   { "re": "reviewing the ENTIRE",   "label": "Reviewer", "key": "rev" }
 ]
