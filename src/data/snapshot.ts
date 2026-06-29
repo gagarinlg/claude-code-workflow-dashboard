@@ -184,6 +184,51 @@ export function buildSnapshot(cfg: Cfg): Snapshot {
   }
 }
 
+/**
+ * Resolve the workflow directory from cfg, applying containment and symlink-traversal
+ * guards for pinned runs. Returns { wfDir, isPinned } on success or { err } on failure.
+ *
+ * Security note: path.resolve() normalises '..' segments but does NOT expand symlinks.
+ * fs.realpathSync() is used after the initial startsWith check to catch symlink escapes:
+ * a symlink inside cfg.base that points outside it passes path.resolve startsWith but
+ * its target (followed by subsequent fs reads) reaches an unintended location.
+ */
+function _resolveWfDir(cfg: Cfg): { wfDir: string; isPinned: boolean } | { err: string } {
+  if (cfg.pinnedDir) {
+    // Security: validate that pinnedDir is lexically under cfg.base (catches '..' traversal).
+    const resolvedPin = path.resolve(cfg.pinnedDir);
+    const resolvedBase = path.resolve(cfg.base);
+    if (!resolvedPin.startsWith(resolvedBase + path.sep)) {
+      return { err: `Pinned run is outside the configured base (${cfg.base}). Clear the pin via "Select Workflow Run…".` };
+    }
+    // Security: validate via fs.realpathSync to catch symlink-escape attacks. A symlink
+    // named wf_crafted inside cfg.base can pass the startsWith check above but point to
+    // an arbitrary filesystem location. realpathSync resolves the canonical path; we
+    // re-validate containment against the canonicalised base.
+    let realPin: string;
+    let realBase: string;
+    try {
+      realPin = fs.realpathSync(cfg.pinnedDir);
+      realBase = fs.realpathSync(cfg.base);
+    } catch {
+      // Path does not exist or is not accessible — degrade to not-found.
+      return { err: `Pinned run no longer exists: ${path.basename(cfg.pinnedDir)}` };
+    }
+    if (!realPin.startsWith(realBase + path.sep)) {
+      return { err: `Pinned run is outside the configured base (symlink check). Clear the pin via "Select Workflow Run…".` };
+    }
+    // Validate that the pinned dir is actually a directory (not a file symlink).
+    let isDir = false;
+    try { isDir = fs.statSync(realPin).isDirectory(); } catch {}
+    if (!isDir) return { err: `Pinned run no longer exists: ${path.basename(cfg.pinnedDir)}` };
+    // Use the canonical (symlink-resolved) path for all subsequent reads.
+    return { wfDir: realPin, isPinned: true };
+  }
+  const wfDir = findWorkflowDir(cfg.base);
+  if (!wfDir) return { err: `No workflow run (wf_*) found under ${cfg.base}` };
+  return { wfDir, isPinned: false };
+}
+
 function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
   // When a run is pinned, use it directly; otherwise search for the newest.
   // Note: cfg.base (an absolute path) is included in the error message. This is
@@ -192,26 +237,9 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
   // from the webview payload (see safeSnap in extension.ts) because workflowDir
   // is derived from an active run and carries more specific path info; the err-path
   // message is a single user-configured string with no additional run-level detail.
-  let wfDir: string | null;
-  let isPinned = false;
-  if (cfg.pinnedDir) {
-    // Security: validate that pinnedDir is under cfg.base so a tampered workspaceState
-    // entry cannot redirect the extension to read arbitrary filesystem paths.
-    const resolvedPin = path.resolve(cfg.pinnedDir);
-    const resolvedBase = path.resolve(cfg.base);
-    if (!resolvedPin.startsWith(resolvedBase + path.sep)) {
-      return { ok: false, msg: `Pinned run is outside the configured base (${cfg.base}). Clear the pin via "Select Workflow Run…".` };
-    }
-    // Validate that the pinned dir still exists; if not, degrade gracefully.
-    let ok = false;
-    try { ok = fs.statSync(cfg.pinnedDir).isDirectory(); } catch {}
-    wfDir = ok ? cfg.pinnedDir : null;
-    if (!wfDir) return { ok: false, msg: `Pinned run no longer exists: ${path.basename(cfg.pinnedDir)}` };
-    isPinned = true;
-  } else {
-    wfDir = findWorkflowDir(cfg.base);
-  }
-  if (!wfDir) return { ok: false, msg: `No workflow run (wf_*) found under ${cfg.base}` };
+  const resolved = _resolveWfDir(cfg);
+  if ('err' in resolved) return { ok: false, msg: resolved.err };
+  const { wfDir, isPinned } = resolved;
   const now = Date.now() / 1000;
   const journal = jload(path.join(wfDir, 'journal.jsonl'));
   const doneIds = new Set(
@@ -226,7 +254,7 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
       })
       .map((o) => (o as Record<string, unknown>)['agentId'] as string)
   );
-  const resultByAgent: Record<string, unknown> = {};
+  const resultByAgent: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const o of journal) {
     if (o == null || typeof o !== 'object') continue;
     const obj = o as Record<string, unknown>;
@@ -414,9 +442,9 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
   // O(1) lookup map — avoids O(J×A) agents.find() inside the journal result loop.
   const agentById = new Map(agents.map((a) => [a.id, a]));
 
-  const seen: Record<string, number> = {};
+  const seen: Record<string, number> = Object.create(null) as Record<string, number>;
   const allFindings: Finding[] = [];
-  const verdicts: Verdict = {};
+  const verdicts: Verdict = Object.create(null) as Verdict;
   const verdictLabels: Record<string, string> = {};
   const structuredResults: StructuredResult[] = [];
   for (const o of journal) {

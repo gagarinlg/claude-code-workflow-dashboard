@@ -99,8 +99,10 @@ jobs:
             exit 1
           fi
           STAMP="$(echo "$NIGHTLY" | cut -d. -f3)"
-          if [ "$STAMP" -lt 2026000000 ]; then
-            echo "::error::Nightly stamp $STAMP is implausibly old — possible clock anomaly on runner"
+          EXPECTED_YEAR=$(date -u +%Y)
+          STAMP_YEAR=$(echo "$STAMP" | cut -c1-4)
+          if [ "$STAMP_YEAR" -lt "$((EXPECTED_YEAR - 1))" ]; then
+            echo "::error::Nightly stamp $STAMP is implausibly old (year $STAMP_YEAR < expected ~$EXPECTED_YEAR) — possible clock anomaly on runner"
             exit 1
           fi
 

@@ -7,6 +7,10 @@
 // This script runs in the webview DOM — acquireVsCodeApi() is available, tsc does not
 // type-check the content of this string. Do NOT add TypeScript annotations here.
 export const JS_WIRE = `
+// Module-level tooltip reference — updated at the start of every wire() call so the
+// singleton Escape-key handler (registered once at init, below wireTabBar) always
+// operates on the currently rendered tooltip node. DO NOT move back into wire().
+var _tlTooltip=null;
 function wire(){
   function toggle_agent(c){const id=c.dataset.aid;state.openAgents[id]=!state.openAgents[id];save();c.classList.toggle('open');const row=c.querySelector('.row');if(row)row.setAttribute('aria-expanded',c.classList.contains('open')?'true':'false');
     // Keep the Collapse-all/Expand-all button label in sync after individual card toggles.
@@ -93,7 +97,14 @@ function wire(){
     btn.addEventListener('click',function(){
       var aid=btn.dataset.pcopied;
       var agent=snap&&snap.agents&&snap.agents.find(function(a){return a.id===aid;});
-      if(agent&&agent.prompt)api.postMessage({type:'copyText',text:agent.prompt});
+      if(agent&&agent.prompt){
+        api.postMessage({type:'copyText',text:agent.prompt});
+        // Provide immediate visual feedback so the user knows the copy succeeded.
+        // WCAG 4.1.3: the button is focused at activation time so AT announces the
+        // name change ('Copied!') automatically via accessible-name update.
+        btn.textContent='Copied!';
+        setTimeout(function(){btn.textContent='Copy';},1500);
+      }
     });
   });
   // Raw-JSON <details> toggle — persists open/closed state per result key via state.openRaw.
@@ -209,7 +220,11 @@ function wire(){
   // Position via el.style.left/top on the named tooltip node — CSP allows this.
   // The tooltip div is rendered outside any view-specific branch so it is present in the
   // DOM in both Gantt and DAG views (see timelinePanel() in js-panels.ts).
-  var tlTooltip=document.getElementById('tl-tooltip');
+  // _tlTooltip is a module-level variable updated here each render so the singleton
+  // Escape-key handler (registered once at module init, see below wireTabBar) always
+  // references the current tooltip node rather than a stale detached element.
+  _tlTooltip=document.getElementById('tl-tooltip');
+  var tlTooltip=_tlTooltip;
 
   // Shared helper: populate and position the tooltip for a given bar/node group element.
   // scrollContainerId: the element whose scroll offset the bar coordinates are relative to.
@@ -237,6 +252,9 @@ function wire(){
     // one render cycle stale. Fixed positioning bypasses that entirely.
     var rect=g.getBoundingClientRect();
     var tipX=rect.left+4;
+    // Clamp x: prevent the tooltip from overflowing the right edge of the viewport.
+    // max-width is 220px (matches .tl-tooltip CSS); keep at least 4px from the right edge.
+    var tipMaxW=220;if(tipX+tipMaxW>window.innerWidth-4)tipX=Math.max(4,window.innerWidth-tipMaxW-8);
     // Clamp y: position above the bar; if that would clip to <4px from the top, go below.
     var tipY=rect.top-42;
     if(tipY<4)tipY=rect.bottom+4;
@@ -268,16 +286,6 @@ function wire(){
     g.addEventListener('blur',function(){
       if(tlTooltip)tlTooltip.setAttribute('hidden','');
     });
-  });
-
-  // WCAG 1.4.13: Escape key dismisses any visible timeline/DAG tooltip.
-  // The listener is attached after each innerHTML re-render (wire() is called after
-  // each render); the old listener is GC'd with the old DOM scope. This is idempotent
-  // and covers both Gantt bar tooltips and DAG node tooltips from a single handler.
-  document.addEventListener('keydown',function(e){
-    if(e.key==='Escape'&&tlTooltip&&!tlTooltip.hasAttribute('hidden')){
-      tlTooltip.setAttribute('hidden','');
-    }
   });
 
   // Tab bar wiring — WAI-ARIA keyboard model for the tablist.
@@ -348,5 +356,19 @@ function wireTabBar(){
   });
 }
 
+// WCAG 1.4.13: Escape key dismisses any visible timeline/DAG tooltip.
+// Registered ONCE at module init — NOT inside wire() — because document is a persistent
+// singleton; attaching inside wire() (called on every render) accumulates N handlers that
+// all fire per keypress, degrading performance without bound.
+// _tlTooltip is a module-level variable updated by wire() each render so this handler
+// always operates on the currently rendered tooltip node.
+// NOTE: Do NOT move this call into wire(). wire() is called after every innerHTML replace
+// and document-level listeners are never GC'd automatically. This singleton pattern is
+// the only correct approach.
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape'&&_tlTooltip&&!_tlTooltip.hasAttribute('hidden')){
+    _tlTooltip.setAttribute('hidden','');
+  }
+});
 render();
 `;

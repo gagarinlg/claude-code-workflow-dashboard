@@ -650,6 +650,7 @@ describe('M3-DepGraph — SR table per-agent pass ordinal', () => {
       'agents',
       [
         escFn, escClsFn, safeNFn,
+        'var TL_LABEL_TRUNC=16;',
         'var DAG_LAYER_W=160;var DAG_NODE_W=130;var DAG_NODE_H=28;var DAG_NODE_GAP=10;var DAG_PAD=16;var DAG_EDGE_COLOR_CLS="tl-dag-edge";',
         dagPanelFn,
         'return dagPanel(agents);',

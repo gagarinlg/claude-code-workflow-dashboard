@@ -1756,6 +1756,9 @@ describe('Findings pagination — behavioral', () => {
       ${extractFunction(rawJs, 'escCls')}
       ${extractFunction(rawJs, 'safeN')}
       ${extractFunction(rawJs, 'fmtTok')}
+      ${extractFunction(rawJs, 'normalizeLiteralEscapes')}
+      ${extractFunction(rawJs, 'applyInlineSpans')}
+      ${extractFunction(rawJs, 'renderInlineMd')}
       ${extractFunction(rawJs, 'findingsPanel')}
       return findingsPanel();
     `;

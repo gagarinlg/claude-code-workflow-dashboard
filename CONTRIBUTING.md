@@ -75,7 +75,7 @@ src/data/snapshot.ts      buildSnapshot + Snapshot types
 src/data/changed.ts       walkChanged
 src/webview/html.ts       getHtml() — webview template + inline client script
 build.mjs                 esbuild build script
-vitest.config.ts          Vitest config; 90 % coverage gate on src/data/** and src/webview/**
+vitest.config.ts          Vitest config; 90 % coverage gate on src/data/**, src/webview/**, and src/export/**
 eslint.config.mjs         ESLint flat config
 tsconfig.json             TypeScript strict config
 test/                     Vitest unit tests (*.test.ts) + fixtures/
@@ -119,12 +119,13 @@ ROADMAP.md                Feature plan and decision log — read this before sta
 ## Coverage gate
 
 Vitest is configured with a **90 % statement/branch/function/line coverage gate**
-on `src/data/**` and `src/webview/**`. Pull requests that drop coverage below 90 %
-will fail CI.
+on `src/data/**`, `src/webview/**`, and `src/export/**`. Pull requests that drop
+coverage below 90 % in any of these three directories will fail CI.
 
-When you add a new pure function under `src/data/` or a new webview rendering
-path under `src/webview/`, add tests for it in `test/`. The test files mirror the
-source structure (e.g. `src/data/parse.ts` → `test/parse.test.ts`).
+When you add a new pure function under `src/data/`, a new webview rendering path
+under `src/webview/`, or a new export function under `src/export/`, add tests for
+it in `test/`. The test files mirror the source structure (e.g. `src/data/parse.ts`
+→ `test/parse.test.ts`, `src/export/markdown.ts` → `test/m2-export.test.ts`).
 
 Run `npm run coverage` locally before pushing to see the coverage report.
 

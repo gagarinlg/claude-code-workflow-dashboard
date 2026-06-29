@@ -185,9 +185,9 @@ are published by the **Nightly** workflow. CI validates and packages every push.
 
 ## Roadmap & contributing
 
-The project tracks progress in **[ROADMAP.md](ROADMAP.md)**. M0–M3 (TypeScript
-migration, robustness, metrics + charts, Markdown export, timeline) are shipped;
-M4 (launch polish, screenshots, community files, Open VSX) is in progress.
+The project tracks progress in **[ROADMAP.md](ROADMAP.md)**. M0–M4 (TypeScript
+migration, robustness, metrics + charts, Markdown export, timeline, launch polish,
+screenshots, community files, Open VSX) are shipped in v1.0.0.
 Project orientation for contributors lives in **[CLAUDE.md](CLAUDE.md)**, and the
 on-disk run format the dashboard reads is documented in **[docs/DATA-FORMAT.md](docs/DATA-FORMAT.md)**.
 

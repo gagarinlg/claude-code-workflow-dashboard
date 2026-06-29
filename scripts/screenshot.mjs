@@ -23,7 +23,14 @@ import { makeSampleRun, FAKE_NOW_SECS } from './make-sample-run.mjs';
 
 // Output dir for screenshots (committed to the repo for the README gallery).
 const outDir = process.argv[2] || 'media/screenshots';
-fs.mkdirSync(outDir, { recursive: true });
+// Containment check: refuse to write outside the project root to prevent
+// path-traversal via a malicious CLI argument (mirrors the fixtureBase guard below).
+const resolvedOut = path.resolve(outDir);
+const projectRoot = path.resolve('.');
+if (!resolvedOut.startsWith(projectRoot + path.sep) && resolvedOut !== projectRoot) {
+  throw new Error(`outDir ${resolvedOut} is outside project root ${projectRoot} — refusing`);
+}
+fs.mkdirSync(resolvedOut, { recursive: true });
 
 // ---------------------------------------------------------------------------
 // Build fixture
@@ -213,10 +220,12 @@ for (const [theme, vars, bg] of [['dark', DARK, '#1e1e1e'], ['light', LIGHT, '#f
   // the harness does not reuse a value that could mask nonce-collision scenarios.
   const nonce = randomBytes(16).toString('base64');
   // Stub acquireVsCodeApi before the webview's inline script runs (CSP-safe).
-  // window._FAKE_NOW_SECS is consumed by timelinePanel() in js-panels.ts to produce
-  // deterministic bar widths for 'run' agents. Without it, live-agent bars extend to
-  // the real wall-clock 'now', making timeline screenshots non-deterministic across machines.
-  const apiStub = `<script nonce="${nonce}">window.acquireVsCodeApi=function(){var _s=null;return{postMessage:function(){},setState:function(s){_s=s;},getState:function(){return _s;}};};window._FAKE_NOW_SECS=${FAKE_NOW_SECS};</script>`;
+  // Override Date.now() to produce deterministic 'now' timestamps for timeline bar widths.
+  // 'run' agents use now as their end time; without a fixed 'now', their bars extend to
+  // real wall-clock time, making timeline screenshots non-deterministic across machines.
+  // NOTE: _FAKE_NOW_SECS was removed from the production timelinePanel() code to avoid
+  // a test-only global hook in production; Date.now override is the correct alternative.
+  const apiStub = `<script nonce="${nonce}">window.acquireVsCodeApi=function(){var _s=null;return{postMessage:function(){},setState:function(s){_s=s;},getState:function(){return _s;}};};Date.now=function(){return ${FAKE_NOW_SECS}*1000;};</script>`;
 
   console.log('rendering theme:', theme);
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2 });
@@ -256,23 +265,23 @@ for (const [theme, vars, bg] of [['dark', DARK, '#1e1e1e'], ['light', LIGHT, '#f
   console.log(`  root innerHTML length: ${rootLen}`);
 
   // Full-page screenshot
-  const fullPath = path.join(outDir, `dashboard-${theme}.png`);
+  const fullPath = path.join(resolvedOut, `dashboard-${theme}.png`);
   await page.screenshot({ path: fullPath, fullPage: true });
   console.log('  wrote', fullPath);
 
   // Above-the-fold screenshot
-  const topPath = path.join(outDir, `dashboard-${theme}-top.png`);
+  const topPath = path.join(resolvedOut, `dashboard-${theme}-top.png`);
   await page.screenshot({ path: topPath, fullPage: false });
   console.log('  wrote', topPath);
 
   // Per-tab screenshots — Agents, Findings, Timeline
-  await captureTab(page, 'agents',   path.join(outDir, `dashboard-${theme}-agents.png`));
-  await captureTab(page, 'findings', path.join(outDir, `dashboard-${theme}-findings.png`));
-  await captureTab(page, 'timeline', path.join(outDir, `dashboard-${theme}-timeline.png`));
+  await captureTab(page, 'agents',   path.join(resolvedOut, `dashboard-${theme}-agents.png`));
+  await captureTab(page, 'findings', path.join(resolvedOut, `dashboard-${theme}-findings.png`));
+  await captureTab(page, 'timeline', path.join(resolvedOut, `dashboard-${theme}-timeline.png`));
 
   await page.close();
 }
 } finally {
   await browser.close();
 }
-console.log('done. screenshots in:', outDir);
+console.log('done. screenshots in:', resolvedOut);

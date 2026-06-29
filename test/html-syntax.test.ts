@@ -67,7 +67,9 @@ describe('parseImplementerMarkdown: section extraction', () => {
     // Build a wrapper that returns the parseImplementerMarkdown function.
     // Stub required globals: acquireVsCodeApi (used at top level before parse fn).
     const apiStub = { getState: () => ({}), setState: () => undefined, postMessage: () => undefined };
-    const docStub = { getElementById: () => null, querySelectorAll: () => [] };
+    // addEventListener is needed because the module-level Escape-key tooltip handler
+    // is registered on document at script init time (outside wire(), to avoid accumulation).
+    const docStub = { getElementById: () => null, querySelectorAll: () => [], addEventListener: () => undefined };
     const winStub = { addEventListener: () => undefined, scrollY: 0, scrollTo: () => undefined };
     const cssStub = { escape: (s: string) => s };
     const wrapper = new Function(

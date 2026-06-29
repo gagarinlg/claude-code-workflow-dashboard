@@ -43,7 +43,7 @@ function render(){
   var header='<div class="sb-header" data-testid="sidebar-header">'
     +'<span class="sb-title">Workflow</span>'
     +'<button class="sb-open-btn" id="sbRefreshLive" title="Refresh" aria-label="Refresh"><span aria-hidden="true">&#8635;</span><span class="sb-btn-lbl"> Refresh</span></button>'
-    +'<button class="sb-open-btn" id="sbSelectRunLive" title="Select or pin a workflow run" aria-label="Select workflow run"><span aria-hidden="true">&#9904;</span><span class="sb-btn-lbl"> Runs</span></button>'
+    +'<button class="sb-open-btn" id="sbSelectRunLive" title="Select or pin a workflow run" aria-label="Select workflow run"><span aria-hidden="true">&#9776;</span><span class="sb-btn-lbl"> Runs</span></button>'
     +'<button class="sb-open-btn" id="sbExportLive" title="Export run as Markdown" aria-label="Export run as Markdown" data-testid="export-btn"><span aria-hidden="true">&#8595;</span><span class="sb-btn-lbl"> Export</span></button>'
     +'<button class="sb-open-btn" id="openFullBtn" title="Open full dashboard in editor" aria-label="Open full dashboard in editor" data-testid="open-full-btn"><span aria-hidden="true">&#10562;</span><span class="sb-btn-lbl"> Open</span></button>'
     +'</div>';

@@ -80,13 +80,13 @@ eslint.config.mjs         ESLint flat config (typescript-eslint).
 tsconfig.json             TypeScript strict config.
 scripts/typecheck.mjs     tsc --noEmit wrapper (TS18003 suppression is a now-dormant safety net; src/ always exists post-M0).
 test/                     Vitest unit tests (*.test.ts) + fixtures/ (wf_basic, wf_partial, base).
-                          Files: changed, defensive, discovery, dogfooding-polish, erika-m2-polish-verification,
-                          erika-m2-verification, erika-m3-layout-verification, erika-m3m4-addl-verification,
-                          erika-m3m4-verification, extension-invariants, html, html-syntax, m0-acceptance,
-                          m1-pinned-run, m2-agent-fold, m2-charts, m2-export, m2-metrics, m2-typed-results,
-                          m2-typed-results-generic, m3-depgraph, m3-timeline, m4-community, m4-readme,
-                          m4-screenshots, parse, snapshot, snapshot-toctou.
-                          **Review scope note**: all 28 test files must be included in every review round.
+                          Files: changed, defensive, discovery, dogfooding-polish, erika-convergence-verification,
+                          erika-m2-polish-verification, erika-m2-verification, erika-m3-layout-verification,
+                          erika-m3m4-addl-verification, erika-m3m4-verification, extension-invariants, html,
+                          html-syntax, m0-acceptance, m1-pinned-run, m2-agent-fold, m2-charts, m2-export,
+                          m2-metrics, m2-typed-results, m2-typed-results-generic, m3-depgraph, m3-timeline,
+                          m4-community, m4-readme, m4-screenshots, parse, snapshot, snapshot-toctou.
+                          **Review scope note**: all 29 test files must be included in every review round.
                           extension-invariants.test.ts in particular covers FSWatcher cleanup on re-activation,
                           safeSnap workflowDir stripping, GPL-3.0-or-later license, command-id constraints,
                           and coverage gates — do not omit it from review scope.
@@ -165,6 +165,28 @@ See **docs/DATA-FORMAT.md** for the exact on-disk shapes these rely on.
 ## Conventions & gotchas
 
 - **Read-only, always.** The extension must never write to `~/.claude` or the repo.
+- **⚠️ Webview JS/CSS live in TEMPLATE LITERALS — DOUBLE-ESCAPE everything. (This exact bug
+  has broken the build ~5 times, incl. an aborted workflow run.)** The webview client script
+  and styles are backtick-delimited string constants: `CSS`/`CSS_SIDEBAR`/`SEV_BADGE_CSS` in
+  `src/webview/css.ts` and `JS_PANELS`/`JS_SIDEBAR`/`JS_WIRE` in
+  `src/webview/{js-panels,js-sidebar,js-wire}.ts` (concatenated by `html.ts` into the nonce'd
+  `<script>`/`<style>`). Inside a backtick template, escape sequences are processed **at build
+  time** and collapse: `\n`→real newline, `\r`→CR, `\t`→tab, `\xNN`/`\uNNNN`→that control char,
+  `\'`→bare `'`, `\\`→`\`. So to emit a real escape in the shipped webview JS you must
+  **double-escape in the source**: `\\n`, `\\r`, `\\t`, `\\x00`, `\\u001f`, `\\'`, and `\\\\`
+  for a literal backslash. This applies in regex literals (`/[\\x00-\\x1f]/`, `.replace(/\\s+/g,…)`),
+  in string args (`lines.join('\\n')`, the quotes in `sel(attr,val)`), **and inside comments**
+  (a `\r`/`\n` in a comment becomes a real control char that ends the comment line early →
+  `Unexpected token`). A single-backslash slip silently produces a malformed webview script:
+  the inline `<script>` fails to parse → the dashboard sticks on "Looking for an active
+  workflow run…", charts render black, or you get `Unexpected token ','` / `Unexpected string`.
+  - **Guard:** `test/html-syntax.test.ts` parses the generated script with `new Function` — it
+    is the canonical detector. Run it after ANY edit to a `src/webview/*` string constant.
+  - **If you hit a webview `SyntaxError`, it is almost always a single-backslash escape (or a
+    raw quote/newline/control char) inside one of these template strings. FIX THE ESCAPING.**
+    Do NOT chase the test harness, `getHtml()`, or "what parse method the tests use" — the
+    parser is correct, the source string is wrong. Locate it precisely: bundle `html.ts`,
+    extract the `<script nonce…>` body, write it to a file, and `node --check` it for line:col.
 - **Undocumented input format.** We consume an internal Claude Code on-disk format
   that can change between CLI versions. Parse **defensively**: tolerate missing
   files/fields, never throw into the UI, and degrade to a friendly empty state.

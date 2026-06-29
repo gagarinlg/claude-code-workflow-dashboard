@@ -163,7 +163,8 @@ export const MAX_ROLE_RULE_RE_LEN = 500;
 // the Node.js event loop for the full duration before this guard fires.
 // The length cap (MAX_ROLE_RULE_RE_LEN) is the primary defence; this guard
 // is a trip-wire for patterns that slip past it, not a true deadline.
-// For a true deadline a worker_threads approach would be needed (TODO(tech-debt)).
+// For a true deadline a worker_threads approach would be needed.
+// Tech-debt: see ROADMAP.md §"M2-tech-debt: worker_threads isolation for regex".
 // Deferred from M2: the structural ReDoS guard (REDOS_DANGER_RE) plus the
 // length cap already block all known catastrophic patterns; worker_threads
 // isolation is a defence-in-depth improvement explicitly deferred from M2.
@@ -176,8 +177,8 @@ const CLASSIFY_MATCH_TIMEOUT_MS = 50;
 // and are rejected. The pattern covers capturing groups, non-capturing (?:…),
 // named (?<name>…), lookahead (?=…), and negative lookahead (?!…) prefixes.
 // This heuristic catches the common cases that slip past the length cap.
-// Note: this is a best-effort safety valve — worker_threads isolation (TODO(tech-debt))
-// is the correct long-term fix for user-supplied patterns. Coverage gaps remain
+// Note: this is a best-effort safety valve — worker_threads isolation (see ROADMAP.md
+// §"M2-tech-debt: worker_threads isolation for regex") is the correct long-term fix. Coverage gaps remain
 // for exotic alternation forms like (a|a)+ — the elapsed-time check is the
 // secondary trip-wire for patterns that evade this structural guard.
 // eslint-disable-next-line security/detect-unsafe-regex -- this IS the ReDoS guard pattern, not a vulnerable regex
@@ -204,7 +205,11 @@ export function classify(text: string, roleRules: RoleRule[]): ClassifyResult {
       /* c8 ignore next */ // ReDoS guard: timing-dependent path; untestable without Date.now mocking — see TOCTOU pattern in snapshot.ts
       if (Date.now() - start > CLASSIFY_MATCH_TIMEOUT_MS) continue;
       if (matched) {
-        return { label: r.label, key: r.key ?? r.label.toLowerCase() };
+        // Sanitize key: apply the same normalisation as the auto-derived fallback path
+        // so user-supplied keys cannot contain spaces (which add CSS class tokens),
+        // prototype-shadowing names (__proto__, constructor), or other unsafe patterns.
+        const rawKey = r.key ?? r.label.toLowerCase();
+        return { label: r.label, key: rawKey.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 24) };
       }
     } catch {
       // The regex failed to compile (invalid pattern that passed length + structural checks).

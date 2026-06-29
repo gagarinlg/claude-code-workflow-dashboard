@@ -201,10 +201,13 @@ describe('classify', () => {
     expect(classify('You are the designer', rules).key).toBe('design_key');
   });
 
-  it('derives key from label when rule has no key', () => {
+  it('derives key from label when rule has no key — sanitized (spaces → underscores, max 24)', () => {
+    // Key is sanitized: spaces become underscores, only [a-z0-9_], capped at 24 chars.
+    // This prevents CSS class-token splitting and prototype-shadowing attacks via
+    // user-supplied roleRules in workspace settings.
     const rules = [{ re: 'planner', label: 'Planning Agent' }];
     const result = classify('You are a planner', rules);
-    expect(result.key).toBe('planning agent');
+    expect(result.key).toBe('planning_agent');
   });
 
   it('key is capped at 24 chars', () => {

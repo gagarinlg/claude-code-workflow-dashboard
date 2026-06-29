@@ -28,6 +28,13 @@ const _s=api.getState()||{};
 let state={activeTab:_s.activeTab||'agents',tabScroll:Object.assign(Object.create(null),_s.tabScroll||{}),findPage:_s.findPage||0,openAgents:Object.assign(Object.create(null),_s.openAgents||{}),openFind:Object.assign(Object.create(null),_s.openFind||{}),fRev:Object.assign(Object.create(null),_s.fRev||{}),fSev:Object.assign(Object.create(null),_s.fSev||{}),openPrompt:Object.assign(Object.create(null),_s.openPrompt||{}),openRaw:Object.assign(Object.create(null),_s.openRaw||{}),tlZoom:typeof _s.tlZoom==='number'&&isFinite(_s.tlZoom)?_s.tlZoom:1,tlScrollLeft:typeof _s.tlScrollLeft==='number'&&isFinite(_s.tlScrollLeft)?_s.tlScrollLeft:0,tlAvailW:typeof _s.tlAvailW==='number'&&isFinite(_s.tlAvailW)?_s.tlAvailW:600,timelineView:(_s.timelineView==='dag'||_s.timelineView==='gantt')?_s.timelineView:'gantt'};
 let snap=null;
 const PAGE_SIZE=50;
+// TL_LABEL_TRUNC: shared agent label truncation cap applied across bar chart,
+// Gantt lane labels, and DAG nodes. A single constant ensures a given label renders
+// identically in all three views. 16 chars matches the Gantt lane column width at 11px font.
+// Declared here (top of module, before first call-site) to avoid var-hoisting temporal
+// hazards: any future extraction of tokenBarChart/dagPanel/timelinePanel into a separate
+// module will find this constant already in scope rather than reading undefined.
+var TL_LABEL_TRUNC=16;
 function save(){api.setState(state);}
 function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 // escCls applies esc() then replaces whitespace with underscores so the result
@@ -48,7 +55,7 @@ function safeN(n){var v=+n;return isFinite(v)?v:0;}
 // fmtUpdated: converts an ISO 8601 timestamp (snap.updatedAt) to a locale time string
 // (HH:MM:SS) for the meta bar. Falls back to the raw string on parse errors.
 // Uses toLocaleTimeString for locale-aware formatting without hardcoding a timezone.
-function fmtUpdated(iso){try{var d=new Date(iso);if(isNaN(d.getTime()))return iso;return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});}catch(e){return iso;}}
+function fmtUpdated(iso){try{var d=new Date(iso);if(isNaN(d.getTime()))return '(unknown)';return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});}catch(e){return '(unknown)';}}
 
 // normalizeLiteralEscapes: convert literal two-char sequences (\\n, \\r\\n, \\r, \\t)
 // to real control characters before parsing. Journal JSON double-encodes newlines:
@@ -66,10 +73,27 @@ function normalizeLiteralEscapes(s){return s.replace(/\\\\r\\\\n/g,'\\n').replac
 // which regex sees as \\*\\* (two escaped asterisks).
 // Extracted to module scope so renderTypedResult summary fallback can use renderInlineMd.
 // Spec v3 correction #10 / LOW closure finding.
+//
+// Security design intent: the input is always pre-esc()'d before reaching here,
+// so the produced <strong> and <code> tags carry no executable semantics.
+// The nonce-based CSP (default-src 'none'; script-src 'nonce-...') blocks any
+// injected script regardless. Applying these transforms only to pre-esc()'d content
+// (never raw transcript text) is the key invariant — never call applyInlineSpans
+// on unescaped input.
 function applyInlineSpans(s){
-  // Bold: **text** (esc does not touch asterisks — they pass through unchanged).
+  // Bold: **text** — capture group forbids '*' inside the matched span so the regex
+  // cannot consume a second '**' marker as content, preventing false-positive bold
+  // on inputs like '** Note: see fix **' where both markers exist but were not intended
+  // as a Markdown bold pair. The alternation ([^*]|\\*(?!\\*))+ allows a lone '*' inside
+  // the span (e.g. '**a*b**') but stops before any '**' sequence.
+  // Unmatched '**' sequences that survive the regex (no closing delimiter found) are
+  // stripped by the trailing replace so stray delimiters never leak into rendered text.
   // Function replacer used to avoid literal capture-group sigil in shipped string.
-  s=s.replace(/\\*\\*([^*]+)\\*\\*/g,function(m,g){return '<strong>'+g+'</strong>';});
+  s=s.replace(/\\*\\*((?:[^*]|\\*(?!\\*))+)\\*\\*/g,function(m,g){return '<strong>'+g+'</strong>';});
+  // Preserve any unmatched '**' remaining after the bold pass (no closing delimiter found).
+  // Replacing with literal '**' keeps the content visible rather than silently discarding it.
+  // The input is always pre-esc()'d so literal asterisks carry no HTML semantics here.
+  s=s.replace(/\\*\\*/g,'**');
   // Inline code: backtick-delimited spans — esc does not touch backticks.
   // Use hex x60 escape for backtick to avoid literal backticks in shipped JS.
   // Function replacer used to avoid literal capture-group sigil in shipped string.
@@ -95,7 +119,11 @@ function renderInlineMd(escaped){
       var tag=ul?'ul':'ol';
       result+='<'+tag+'>';
       while(i<lines.length&&(ul?/^- |^\\* /.test(lines[i]):/^\\d+\\. /.test(lines[i]))){
-        var item=lines[i].replace(/^- |^\\* /,'').replace(/^\\d+\\. /,'');
+        // Item text extraction is branch-specific: ul strips only the unordered marker;
+        // ol strips only the ordered marker. Running both replacements unconditionally
+        // would clobber content like '- 1. text' (a valid unordered item whose text
+        // starts with a number) by stripping the leading '1. ' after the '- ' marker.
+        var item=ul?lines[i].replace(/^[-*]\\s+/,''):lines[i].replace(/^\\d+\\.\\s*/,'');
         result+='<li>'+applyInlineSpans(item)+'</li>';
         i++;
       }
@@ -130,13 +158,13 @@ function tabDefs(){
   var verdictCount=snap&&snap.verdicts?Object.keys(snap.verdicts).length:0;
   var resultsCount=snap&&snap.structuredResults?snap.structuredResults.length:0;
   return [
-    {key:'agents',label:'Agents',enabled:true,badge:agentCount>0?String(agentCount):''},
-    {key:'findings',label:'Findings',enabled:findCount>0,badge:findCount>0?String(findCount):''},
-    {key:'verdicts',label:'Verdicts',enabled:verdictCount>0,badge:''},
-    {key:'changed',label:'Changed',enabled:true,badge:''},
-    {key:'charts',label:'Charts',enabled:agentCount>0,badge:''},
-    {key:'timeline',label:'Timeline',enabled:agentCount>0,badge:''},
-    {key:'results',label:'Results',enabled:resultsCount>0,badge:''}
+    {key:'agents',label:'Agents',enabled:true,badge:agentCount>0?String(agentCount):'',disabledReason:''},
+    {key:'findings',label:'Findings',enabled:findCount>0,badge:findCount>0?String(findCount):'',disabledReason:'No findings recorded yet'},
+    {key:'verdicts',label:'Verdicts',enabled:verdictCount>0,badge:'',disabledReason:'No verdicts yet'},
+    {key:'changed',label:'Changed',enabled:true,badge:'',disabledReason:''},
+    {key:'charts',label:'Charts',enabled:agentCount>0,badge:'',disabledReason:'No agents started yet'},
+    {key:'timeline',label:'Timeline',enabled:agentCount>0,badge:'',disabledReason:'No agents started yet'},
+    {key:'results',label:'Results',enabled:resultsCount>0,badge:'',disabledReason:'No structured results yet'}
   ];
 }
 // Ensure state.activeTab is a currently-enabled tab; fall back to 'agents'.
@@ -155,8 +183,12 @@ function tabBar(){
     var isCurrent=d.key===state.activeTab;
     var badge=d.badge?'<span class="tab-badge" aria-hidden="true">'+esc(d.badge)+'</span>':'';
     if(!d.enabled){
-      // disabled: not focusable, not selectable
-      return '<button role="tab" class="tab-btn" id="tab-'+esc(d.key)+'" aria-selected="false" aria-disabled="true" disabled tabindex="-1" data-tabkey="'+esc(d.key)+'">'+esc(d.label)+badge+'</button>';
+      // disabled: not focusable, not selectable; title provides tooltip on hover.
+      // sr-only span inside the button emits the disabled reason to AT unconditionally —
+      // title= is not reliably announced on non-focusable elements (WCAG 1.3.1, 4.1.2).
+      var titleAttr=d.disabledReason?' title="'+esc(d.disabledReason)+'"':'';
+      var srReason=d.disabledReason?'<span class="sr-only"> — '+esc(d.disabledReason)+'</span>':'';
+      return '<button role="tab" class="tab-btn" id="tab-'+esc(d.key)+'"'+titleAttr+' aria-selected="false" aria-disabled="true" disabled tabindex="-1" data-tabkey="'+esc(d.key)+'">'+esc(d.label)+badge+srReason+'</button>';
     }
     if(isCurrent){
       return '<button role="tab" class="tab-btn tab-active" id="tab-'+esc(d.key)+'" aria-selected="true" tabindex="0" data-tabkey="'+esc(d.key)+'">'+esc(d.label)+badge+'</button>';
@@ -310,7 +342,9 @@ function overview(){
   // safeN() guards L.sevTotals[s] — it arrives via postMessage so a crafted or
   // corrupted snapshot message could carry a non-numeric value (null, undefined,
   // or a string). safeN() ensures only a finite number reaches innerHTML.
-  let sev='';for(const s of Object.keys(L.sevTotals)){const es=esc(s);const ec=escCls(s);sev+='<span class="sev '+ec+'">'+es+' '+safeN(L.sevTotals[s])+'</span>';}
+  const SEV_ORDER_OV=['CRITICAL','HIGH','MEDIUM','LOW','NITPICK','UNRATED'];
+  const sevKeys=Object.keys(L.sevTotals||{}).sort(function(a,b){var ai=SEV_ORDER_OV.indexOf(a);var bi=SEV_ORDER_OV.indexOf(b);var ar=ai===-1?SEV_ORDER_OV.length:ai;var br=bi===-1?SEV_ORDER_OV.length:bi;return ar-br;});
+  let sev='';for(const s of sevKeys){const es=esc(s);const ec=escCls(s);sev+='<span class="sev '+ec+'">'+es+' '+safeN(L.sevTotals[s])+'</span>';}
   // Optional token KPIs — only rendered when the field is present and not undefined.
   // safeN() guards against NaN/Infinity for any unexpected type coercions.
   // Optional token KPIs: use aria-describedby + sr-only text instead of title-only
@@ -339,11 +373,11 @@ function overview(){
     +'<div class="kpi" aria-describedby="stalled-panel-desc"><div class="dim">Stalled</div><b'+(L.dead?' class="kpi-stalled-active"':'')+'>'+safeN(L.dead)+'</b><div class="'+(L.dead?'':'dim ')+'kpi-sublabel">no activity '+esc(STALE_LABEL)+'</div><span id="stalled-panel-desc" class="sr-only">'+esc(STALE_TOOLTIP)+'</span></div>'
     +(L.superseded?'<div class="kpi" aria-describedby="superseded-panel-desc"><div class="dim">Superseded</div><b class="kpi-superseded">'+safeN(L.superseded)+'</b><div class="kpi-sublabel">retried agents</div><span id="superseded-panel-desc" class="sr-only">Agents that were retried before producing a result; excluded from the live count.</span></div>':'')
     +'<div class="kpi"><div class="dim">Agents</div><b>'+safeN(L.total)+'</b></div>'
-    +'<div class="kpi"><div class="dim">Out tokens</div><b data-testid="loop-out-tok">'+fmtTok(L.outTok)+'</b></div>'
-    +'<div class="kpi"><div class="dim">Tool-calls</div><b data-testid="loop-tools">'+safeN(L.tools)+'</b></div>'
+    +'<div class="kpi" aria-describedby="kpi-out-tok-desc"><div class="dim">Out tokens</div><b data-testid="loop-out-tok">'+fmtTok(L.outTok)+'</b><span id="kpi-out-tok-desc" class="sr-only">Total output tokens generated by all agents in this run</span></div>'
+    +'<div class="kpi" aria-describedby="kpi-tools-desc"><div class="dim">Tool-calls</div><b data-testid="loop-tools">'+safeN(L.tools)+'</b><span id="kpi-tools-desc" class="sr-only">Total tool invocations made by all agents in this run</span></div>'
     +optTok
     +'<div class="kpi"><div class="dim">Findings</div><b>'+safeN(L.findings)+'</b></div>'
-    +'</div>'+(sev?('<div class="overview-sev-row">'+sev+'</div>'):'');
+    +'</div>'+(sev?('<div class="overview-sev-row" role="group" aria-label="Findings by severity">'+sev+'</div>'):'');
   return '<div id="overview-bar">'+kpis+'</div>';
 }
 
@@ -530,9 +564,11 @@ function renderTypedResult(agentType,result){
         // why and fix are rendered inline (always visible) — no .detail collapse wrapper.
         // Typed-findings are in structured results where context is always useful,
         // unlike the Findings tab where individual rows are collapsible.
+        // Why/Fix passed through renderInlineMd so **bold** and code spans in reviewer text render correctly.
+        // normalizeLiteralEscapes handles journal JSON double-encoded newlines (spec v3 #9).
         return '<div class="finding typed-finding"><div class="ttl"><span class="sev '+ec+'">'+es+'</span><b>'+esc(f.title||'(untitled)')+'</b>'
           +(f.location?'<span class="dim"> ['+esc(f.location)+']</span>':'')+'</div>'
-          +((f.why||f.fix)?'<div class="typed-finding-detail">'+(f.why?'<div><b>Why:</b> '+esc(f.why)+'</div>':'')+(f.fix?'<div class="finding-fix"><b>Fix:</b> '+esc(f.fix)+'</div>':'')+'</div>':'')+'</div>';
+          +((f.why||f.fix)?'<div class="typed-finding-detail">'+(f.why?'<div><b>Why:</b> '+renderInlineMd(normalizeLiteralEscapes(esc(String(f.why))))+'</div>':'')+(f.fix?'<div class="finding-fix"><b>Fix:</b> '+renderInlineMd(normalizeLiteralEscapes(esc(String(f.fix))))+'</div>':'')+'</div>':'')+'</div>';
       }).join('');
       handled.findings=1;
     }else if(result.findings!==undefined){
@@ -764,7 +800,9 @@ function findingsPanel(){
     return '<div class="dim pad">'+esc(emptyMsg)+'</div>';
   }
   snap.labels.forEach(l=>{if(state.fRev[l]===undefined)state.fRev[l]=1;});
+  const SEV_ORDER_FILTER=['CRITICAL','HIGH','MEDIUM','LOW','NITPICK','UNRATED'];
   const sevs=[...new Set(snap.allFindings.map(f=>f.severity||'UNRATED'))];
+  sevs.sort(function(a,b){var ai=SEV_ORDER_FILTER.indexOf(a);var bi=SEV_ORDER_FILTER.indexOf(b);var ar=ai===-1?SEV_ORDER_FILTER.length:ai;var br=bi===-1?SEV_ORDER_FILTER.length:bi;return ar-br;});
   sevs.forEach(s=>{if(state.fSev[s]===undefined)state.fSev[s]=1;});
   // Compute anyOff before building chips so the Clear filters button can be
   // rendered in the filter bar (visible whenever any filter is inactive, not
@@ -780,7 +818,9 @@ function findingsPanel(){
   // data-rev and the visible text are both esc()'d to prevent attribute/HTML injection from a
   // transcript-derived label. The escaped value round-trips: the browser decodes entities on
   // parse, so el.dataset.rev returns the raw label — state-key lookups still match.
-  snap.labels.forEach(l=>chips+='<span class="chip rev '+(state.fRev[l]?'':'off')+'" data-rev="'+esc(l)+'" tabindex="0" role="button" aria-pressed="'+(state.fRev[l]?'true':'false')+'">'+esc(l)+'</span>');
+  // esc(l)||'(unknown)': when reviewer is empty string, show a labelled chip so sighted users
+  // and AT can identify the filter group (an empty chip has no accessible name — WCAG 4.1.2).
+  snap.labels.forEach(l=>chips+='<span class="chip rev '+(state.fRev[l]?'':'off')+'" data-rev="'+esc(l)+'" tabindex="0" role="button" aria-pressed="'+(state.fRev[l]?'true':'false')+'">'+(esc(l)||'(unknown)')+'</span>');
   chips+='</div><div role="group" aria-label="Filter by severity" class="filter-sep"><span class="filter-group-label">Severity</span>';
   // data-sev and the visible text are both esc()'d (XSS-safe). The escaped value round-trips:
   // the browser decodes entities on parse, so el.dataset.sev returns the raw key — state-key
@@ -815,8 +855,8 @@ function findingsPanel(){
   const byP=Object.create(null);pageList.forEach(f=>{(byP[f.pass]=byP[f.pass]||[]).push(f);});
   let body=chips+paginator;
   Object.keys(byP).sort((a,b)=>(Number(b)||0)-(Number(a)||0)).forEach(p=>{
-    const fc=byP[p].length;body+='<h4 class="pass-heading">Pass '+esc(p)+' · '+fc+' finding'+(fc!==1?'s':'')+'</h4>';
-    body+=byP[p].map(f=>{
+    const fc=byP[p].length;body+='<h3 class="pass-heading">Pass '+esc(p)+' · '+fc+' finding'+(fc!==1?'s':'')+'</h3>';
+    body+=byP[p].map((f,i)=>{
       // JSON.stringify gives an unambiguous collapse-state key even when reviewer, pass,
       // or location contains the '|' separator character that the old concat key used.
       // Title is included to reduce collisions when two findings from the same reviewer/pass
@@ -824,9 +864,14 @@ function findingsPanel(){
       const id=JSON.stringify([f.reviewer,p,f.location||'',f.title||'']);
       const open=state.openFind[id]?'open':'';
       var esev=esc(f.severity||'UNRATED');var ecevCls=escCls(f.severity||'UNRATED');
-      return '<div class="finding '+open+'" data-fid="'+esc(id)+'"><div class="ttl" tabindex="0" role="button" aria-expanded="'+(open?'true':'false')+'"><span class="sev '+ecevCls+'">'+esev+'</span><b>'+esc(f.title||'(untitled)')+'</b> <span class="dim">['+esc(f.reviewer)+']</span></div>'
+      // Stable id for the .detail element: derived from pass key + per-pass index.
+      // Used by aria-controls on .ttl so AT can locate the controlled content (WCAG 4.1.2).
+      var detId='fd-det-'+esc(p)+'-'+i;
+      return '<div class="finding '+open+'" data-fid="'+esc(id)+'"><div class="ttl" tabindex="0" role="button" aria-expanded="'+(open?'true':'false')+'" aria-controls="'+detId+'"><span class="sev '+ecevCls+'">'+esev+'</span><b>'+esc(f.title||'(untitled)')+'</b> <span class="dim">['+esc(f.reviewer||'(unknown)')+']</span></div>'
         +(f.location?'<div class="loc">'+esc(f.location)+'</div>':'')
-        +'<div class="detail">'+(f.why?'<div><b>Why:</b> '+esc(f.why)+'</div>':'')+(f.fix?'<div class="finding-fix"><b>Fix:</b> '+esc(f.fix)+'</div>':'')+'</div></div>';
+        // Why/Fix passed through renderInlineMd so **bold** and code spans in reviewer text render correctly.
+        // normalizeLiteralEscapes handles journal JSON double-encoded newlines (spec v3 #9).
+        +'<div class="detail" id="'+detId+'">'+(f.why?'<div><b>Why:</b> '+renderInlineMd(normalizeLiteralEscapes(esc(String(f.why))))+'</div>':'')+(f.fix?'<div class="finding-fix"><b>Fix:</b> '+renderInlineMd(normalizeLiteralEscapes(esc(String(f.fix))))+'</div>':'')+'</div></div>';
     }).join('');
   });
   if(!list.length){
@@ -856,7 +901,6 @@ function findingsPanel(){
 // then writes state.openRaw[key]. On re-render, the open attribute is applied from state.openRaw
 // by checking the closest [data-rlabel] — this is done via the openRaw-lookup in wire(), not here,
 // because rawJsonDetails is called from renderTypedResult which has no stateKey context.
-// The data-ropen attribute is set when openRaw state is truthy; wire() reads it on init.
 function rawJsonDetails(obj){
   if(!obj||typeof obj!=='object')return '';
   var json='';try{json=JSON.stringify(obj,null,2);}catch(e){json='[unserializable]';}
@@ -935,11 +979,14 @@ function parseImplementerMarkdown(text){
       if(lowerLabel==='test results'){
         var tText=body.trim();
         if(tText){
-          var tOk=/passed|green|ok/i.test(tText);
+          // Word-boundary anchors prevent subword 'ok' false-positives (e.g. 'invoke', 'token', 'broken').
+          var tOk=/\b(?:pass(?:ed)?|ok|success|done|green)\b/i.test(tText);
           var tBad=/fail|error|broken/i.test(tText);
           var tCls=tOk?' typed-verdict-ok':tBad?' typed-verdict-bad':'';
           out+='<div class="typed-section-label">'+esc(label)+'</div>';
-          out+='<div class="typed-summary'+tCls+'">'+renderInlineMd(esc(tText))+'</div>';
+          // normalizeLiteralEscapes: journal JSON can double-encode newlines; normalize before
+          // renderInlineMd so list items and bold spans render correctly (same as other paths).
+          out+='<div class="typed-summary'+tCls+'">'+renderInlineMd(normalizeLiteralEscapes(esc(tText)))+'</div>';
         }
         return;
       }
@@ -948,9 +995,10 @@ function parseImplementerMarkdown(text){
       // They carry no body content worth rendering on their own; sub-sections handle detail.
       if(headingLine.startsWith('## ')&&!body.trim())return;
       var bodyText=body.trim();
-      if(!bodyText&&headingLine.startsWith('## '))return;
       out+='<div class="typed-section-label">'+esc(label)+'</div>';
-      if(bodyText){out+='<div class="typed-summary">'+renderInlineMd(esc(bodyText))+'</div>';}
+      // normalizeLiteralEscapes: normalize before renderInlineMd so list items and bold spans
+      // render correctly even when journal JSON double-encodes newlines (same as other paths).
+      if(bodyText){out+='<div class="typed-summary">'+renderInlineMd(normalizeLiteralEscapes(esc(bodyText)))+'</div>';}
     });
     out+='</div>';
     return out;
@@ -994,7 +1042,8 @@ function changedPanel(){
   }else{
     if(byAgents.length){
       out+='<div class="dim changed-caption">Files reported by agents ('+byAgents.length+')</div>';
-      out+='<ul class="files">'+byAgents.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul>';
+      var byAgentsCapped=byAgents.length>200;
+      out+='<ul class="files">'+byAgents.slice(0,200).map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+(byAgentsCapped?'<li class="dim">…and '+(byAgents.length-200)+' more</li>':'')+'</ul>';
     }else{
       out+='<div class="dim changed-caption">No files reported by agents yet</div>';
     }
@@ -1040,7 +1089,7 @@ function tokenBarChart(){
     // sliced mid-character (e.g. &quot; sliced to &quot becomes a dangling &).
     // The full escaped label is used in <title> for the tooltip.
     var rawLabel=a.label||'agent';
-    var truncLabel=rawLabel.slice(0,TL_LABEL_TRUNC)+(rawLabel.length>TL_LABEL_TRUNC?'…':'');
+    var truncLabel=rawLabel.length>TL_LABEL_TRUNC?rawLabel.slice(0,TL_LABEL_TRUNC-1)+'…':rawLabel;
     var lbl=esc(rawLabel);
     var lblTrunc=esc(truncLabel);
     // aria-hidden on <g>: the SVG root carries role="img" with aria-label that is the
@@ -1164,9 +1213,6 @@ var DAG_PAD=16;          // px: canvas padding
 var DAG_EDGE_COLOR_CLS='tl-dag-edge'; // CSS class for edge polylines
 
 function dagPanel(agents){
-  // Declare TL_LABEL_TRUNC locally so this function is self-contained when extracted
-  // by test harnesses (extractBalancedFn) — the module-level var is not in scope there.
-  var TL_LABEL_TRUNC=16;
   if(!agents||!agents.length){
     return '<div class="dim pad" data-testid="dag-empty">No agents yet.</div>';
   }
@@ -1293,12 +1339,6 @@ function dagPanel(agents){
   return srTable+scrollDiv;
 }
 
-// Shared agent label truncation cap applied across bar chart, Gantt lane labels, and DAG nodes.
-// A single constant ensures a given label renders identically in all three views, preventing
-// the disorientation of seeing "Implement/F…" in one view and "Implement/Fix" in another.
-// 16 chars matches the Gantt lane column width at 11px font (previously bar=14, Gantt=16, DAG=18).
-var TL_LABEL_TRUNC=16;
-
 // Timeline geometry constants — not configurable, match the CSS lane heights.
 var TL_LABEL_W=120;      // px: sticky label column width
 var TL_LANE_H=26;        // px: height of each agent bar
@@ -1330,14 +1370,11 @@ function fmtElapsedSR(s){var v=safeN(s);if(v===0)return '<1s';if(v<60)return v+'
 function tlX(dt,zoom,k){var _k=k!==undefined?k:TL_K;return TL_LABEL_W+zoom*_k*Math.max(0,dt);}
 
 function timelinePanel(){
-  // Declare TL_LABEL_TRUNC locally so this function is self-contained when extracted
-  // by test harnesses (extractBalancedFn) — the module-level var is not in scope there.
-  var TL_LABEL_TRUNC=16;
   // Collect all agents (including superseded — they render with a distinct class).
   var agents=snap.agents;
   if(!agents||!agents.length)return '<div class="dim pad" data-testid="tl-empty">No agents yet.</div>';
 
-  var now=(typeof window!=='undefined'&&typeof window._FAKE_NOW_SECS==='number'?window._FAKE_NOW_SECS:Date.now()/1000);
+  var now=Date.now()/1000;
   // Group agents by label (role-grouped lanes).
   // Lane order: earliest start per label.
   var laneMap=Object.create(null); // label -> [{agent,...}]

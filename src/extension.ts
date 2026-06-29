@@ -16,10 +16,10 @@ import { generateMarkdown, buildExportFilename } from './export/markdown';
 // All state declarations are hoisted above every function that closes over them
 // so there is never a TDZ (Temporal Dead Zone) risk — getCfg() references
 // pinnedDir, so pinnedDir must be declared before getCfg is defined.
-// TODO(tech-debt): move into an activation-context object to support clean reload
-// across multiple activate() calls. Tracked in ROADMAP.md §M3 "M3-tech-debt: Activation-context
-// object in extension.ts". The activate() reset block already handles re-activation correctly;
-// this is a code-quality improvement scheduled for M3.
+// Tech-debt: see ROADMAP.md §"M3-tech-debt: Activation-context object in extension.ts".
+// Moving into an activation-context object would support clean reload across multiple
+// activate() calls. The activate() reset block already handles re-activation correctly;
+// this is a code-quality improvement deferred to tech-debt.
 let latest: Snapshot | null = null;
 const webviews = new Set<vscode.Webview>();
 let statusItem: vscode.StatusBarItem | null = null;
@@ -351,7 +351,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Extension Development Host). Without a reset, stale Webview and StatusBarItem
   // references from the prior session leak, causing ghost status-bar items and
   // postMessage() calls to disposed webviews.
-  // TODO(tech-debt): tracked in ROADMAP.md §M3 "M3-tech-debt: Activation-context object".
+  // Tech-debt: see ROADMAP.md §"M3-tech-debt: Activation-context object in extension.ts".
   latest = null;
   webviews.clear();
 

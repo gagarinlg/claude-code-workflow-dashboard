@@ -1317,10 +1317,11 @@ describe('generateMarkdown — escBody: bold-span injection via **', () => {
       },
     ];
     const md = generateMarkdown(snap);
-    // ** must be replaced with * so the surrounding **Why:** bold span is not corrupted
+    // ** must be replaced with \* (escaped asterisk) so the result is never interpreted
+    // as a Markdown italic opener in the surrounding **Why:** template context.
     expect(md).not.toContain('**broken**');
-    // Single asterisks are used to preserve visual emphasis intent
-    expect(md).toContain('text *broken* end');
+    // Escaped asterisks render as literal '*' in Markdown without being italic openers.
+    expect(md).toContain('text \\*broken\\* end');
   });
 
   it('replaces ** with * in f.fix to prevent bold-span forging while preserving emphasis', () => {
@@ -1338,7 +1339,9 @@ describe('generateMarkdown — escBody: bold-span injection via **', () => {
     ];
     const md = generateMarkdown(snap);
     expect(md).not.toContain('**injected**');
-    expect(md).toContain('fix *injected*');
+    // ** sequences are now replaced with \* (escaped asterisk) so the result
+    // is never interpreted as a Markdown italic/bold opener in surrounding context.
+    expect(md).toContain('fix \\*injected\\*');
   });
 });
 
@@ -1734,12 +1737,13 @@ describe('generateMarkdown — escBody: bold-forging edge cases', () => {
       },
     ];
     const md = generateMarkdown(snap);
-    // *** sequences must be replaced with * (single asterisk) — not stripped entirely.
+    // *** sequences (2+ asterisks) must be replaced with \* (escaped asterisk) — not stripped.
     // Note: the markdown template itself emits **Why:** etc, so we check
     // only that the triple-asterisk payload does not appear verbatim.
     expect(md).not.toContain('***bold-italic***');
-    // Three asterisks → one asterisk on each side → *bold-italic* in output.
-    expect(md).toContain('text *bold-italic* end');
+    // Three asterisks → \* (escaped) on each side → \*bold-italic\* in output.
+    // Escaped asterisks render as literal '*' in Markdown without being italic openers.
+    expect(md).toContain('text \\*bold-italic\\* end');
   });
 
   it('strips ** at the very start of a body value (position 0)', () => {

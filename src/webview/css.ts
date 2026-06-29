@@ -11,6 +11,12 @@
 // The .sev sizing rule (font-size, padding, border-radius) differs between panel and
 // sidebar and is defined separately in each export, not here.
 // ---------------------------------------------------------------------------
+// SEV_BADGE_CSS: severity badge color rules.
+// rgba() tint backgrounds are semi-transparent overlays (15% alpha) that pair with
+// --vscode-* foreground/border vars for dark and light themes. They are intentionally
+// overridden by the @media (forced-colors:active) block in CSS below, which sets
+// background:ButtonFace and color/border:ButtonText for all severity classes, ensuring
+// visibility in Windows High Contrast and other forced-colors modes.
 export const SEV_BADGE_CSS = `.CRITICAL{background:rgba(248,81,73,.15);color:var(--vscode-charts-red,#f85149);border:1px solid var(--vscode-charts-red,#f85149)}.HIGH{background:rgba(210,100,50,.15);color:var(--vscode-charts-orange,#d26432);border:1px solid var(--vscode-charts-orange,#d26432)}.MEDIUM{background:rgba(220,170,0,.15);color:var(--vscode-charts-yellow,#dcaa00);border:1px solid var(--vscode-charts-yellow,#dcaa00)}.LOW{background:rgba(63,135,185,.15);color:var(--vscode-charts-blue,#3f87b9);border:1px solid var(--vscode-charts-blue,#3f87b9)}.NITPICK{background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}.UNRATED{background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}`;
 
 // ---------------------------------------------------------------------------
@@ -20,8 +26,8 @@ export const SEV_BADGE_CSS = `.CRITICAL{background:rgba(248,81,73,.15);color:var
 export const CSS = `
 *{box-sizing:border-box}
 body{margin:0;font:13px var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-editor-background);display:flex;flex-direction:column;height:100vh;overflow:hidden}
-.dim{opacity:.6}.pad{padding:14px}.grow{flex:1}
-#bar{flex-shrink:0;display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-panel-border);z-index:5}
+.dim{opacity:.75}.pad{padding:14px}.grow{flex:1}
+#bar{flex-shrink:0;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:8px 12px;background:var(--vscode-sideBar-background);border-bottom:1px solid var(--vscode-panel-border);z-index:5}
 #title{font-weight:600}
 /* Uniform button height: line-height:1 collapses leading so glyph entities (⛐ ↧ ⤢ 📖)
    don't inflate the button box. min-height provides a stable tap target regardless of content.
@@ -60,6 +66,7 @@ input[type=checkbox]:focus-visible{outline:2px solid var(--vscode-focusBorder);o
 .card.run{border-color:var(--vscode-charts-green,#3fb950)}
 .card.dead{opacity:.65}
 .row{display:flex;align-items:center;gap:8px;cursor:pointer}
+.row:hover{background:var(--vscode-list-hoverBackground)}
 .role{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .st{font-size:11px;padding:1px 6px;border-radius:10px}
 .st.run{background:rgba(63,185,80,.2);color:var(--vscode-charts-green,#3fb950)}
@@ -88,6 +95,9 @@ ${SEV_BADGE_CSS}
 .ok{color:var(--vscode-charts-green,#3fb950)}.bad{color:var(--vscode-charts-red,#f85149)}
 .finding{border:1px solid var(--vscode-panel-border);border-radius:6px;padding:6px 9px;margin-bottom:6px}
 .finding .ttl[tabindex]{cursor:pointer}
+/* Opacity shift on hover: safer than background here because the finding row has a border
+   that would require background-color tuning; opacity gives a clear visual cue instead. */
+.finding .ttl[tabindex]:hover{opacity:.85}
 .finding .detail{display:none;margin-top:6px;font-size:12px}
 .finding.open .detail{display:block}
 .finding .loc{font-family:var(--vscode-editor-font-family);opacity:.7;font-size:11px}
@@ -99,8 +109,12 @@ ${SEV_BADGE_CSS}
 .chip{font-size:11px;padding:2px 8px;border-radius:12px;cursor:pointer;border:1px solid var(--vscode-panel-border)}
 .chip:not(.off){background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:2px solid var(--vscode-button-background);font-weight:600}
 .chip.off{opacity:.5;border-style:dashed}
+/* Hover feedback: matches button:hover convention (--vscode-button-hoverBackground).
+   Active chips get the hover background; inactive chips lighten slightly via opacity. */
+.chip:not(.off):hover{background:var(--vscode-button-hoverBackground)}
+.chip.off:hover{opacity:.65}
 .files{padding:0;margin:0;list-style:none}
-.files li{font-family:var(--vscode-editor-font-family);font-size:11px;list-style:none}
+.files li{font-family:var(--vscode-editor-font-family);font-size:11px;list-style:none;word-break:break-word;overflow-wrap:break-word}
 pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-space:pre-wrap;word-break:break-word}
 /* Non-collapsible result items: override the pointer cursor set by .finding .ttl[tabindex]
    so users are not misled into thinking the row is interactive. */
@@ -356,6 +370,9 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
 .tl-stripe-overlay{opacity:.55}
 /* Focus ring: hidden by default; shown when bar group is focused. */
 .tl-focus-ring{fill:none;stroke:none}
+/* cursor:pointer: Gantt bars have role=button and click handlers; pointer matches the DAG
+   node sibling (.tl-dag-node-group) and the general interactive-element convention. */
+.tl-bar-group{cursor:pointer}
 .tl-bar-group:focus{outline:none}
 .tl-bar-group:focus .tl-focus-ring{stroke:var(--vscode-focusBorder);stroke-width:2;fill:none}
 /* Live-agent pulsing right-edge cap. */
@@ -435,7 +452,7 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
 export const CSS_SIDEBAR = `
 *{box-sizing:border-box}
 body{margin:0;font:12px var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-sideBar-background);overflow-x:hidden}
-.dim{opacity:.6}.pad{padding:10px}
+.dim{opacity:.75}.pad{padding:10px}
 .sb-header{display:flex;align-items:center;gap:6px;padding:8px 10px 4px;border-bottom:1px solid var(--vscode-panel-border);flex-wrap:wrap;overflow-x:hidden}
 .sb-title{font-weight:600;font-size:11px;letter-spacing:.04em;text-transform:uppercase;flex:0 0 auto;white-space:nowrap;margin-right:auto}
 /* Sidebar action buttons: uniform height via min-height + line-height:1 so mixed glyphs
@@ -478,7 +495,7 @@ ${SEV_BADGE_CSS}
 /* Overflow indicator when more than 5 agents are active — extracted from inline style. */
 .sb-agent-overflow{font-size:10px;padding-top:3px}
 /* Pinned run badge in the sidebar run-id line — extracted from inline style. */
-.sb-pinned-badge{margin-left:4px;font-size:9px}
+.sb-pinned-badge{margin-left:4px;font-size:10px}
 /* Findings count in section title — tabular-nums so the digit aligns with KPI values. */
 .sb-num{font-variant-numeric:tabular-nums}
 /* Changed-files rows in the sidebar — extracted from inline style to allow forced-colors overrides. */

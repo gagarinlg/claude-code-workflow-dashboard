@@ -84,7 +84,7 @@ per-agent output.
 For each agent, with `STALE_SECS = 180`:
 
 - **done** — a `result` exists in the journal.
-- **run** (live) — no result, transcript mtime within the last 90 s.
+- **run** (live) — no result, transcript mtime within the last 180 s.
 - **dead** — no result and no recent activity (e.g. interrupted by stop/resume).
 
 ## Snapshot object (host → webview)
@@ -99,19 +99,29 @@ For each agent, with `STALE_SECS = 180`:
   "updatedAt": "<localized time>",
   "loop": { "phase", "live", "done", "dead", "total", "outTok", "tools",
             "passes", "findings", "sevTotals": { "HIGH": 2, ... },
-            "superseded": 0 },          // count of superseded agents (excluded from dead count); M3 field
+            "superseded": 0,           // count of superseded agents (excluded from dead count); M3 field
+            "inTok?": <n>,             // sum of input_tokens across all agents; M2 field (optional)
+            "cacheRead?": <n>,         // sum of cache_read_input_tokens; M2 field (optional)
+            "cacheCreate?": <n> },     // sum of cache_creation_input_tokens; M2 field (optional)
   "labels": ["Review", "Verify", ...],          // distinct reviewer labels
   "agents": [ { "id", "label", "key", "status", "elapsed", "tokens", "tools",
                "tail", "lastActivity", "start", "mtime", "idx",
                "superseded?",          // boolean (M3): true when this agent was superseded by a later same-key agent
+               "agentType?",           // string (M2): raw agentType from agent-<id>.meta.json (e.g. "workflow-plugins:implementer")
+               "prompt?",              // string (M2): first user-turn text (truncated), used for the prompt disclosure in the UI
+               "inTok?",               // number (M2): sum of input_tokens from this agent's transcript
+               "cacheRead?",           // number (M2): sum of cache_read_input_tokens from this agent's transcript
+               "cacheCreate?",         // number (M2): sum of cache_creation_input_tokens from this agent's transcript
                "findings?"|"result?"|"resultText?", "verdict?" } ],
   "allFindings": [ { "pass", "reviewer", "key", ...finding } ],
-  "structuredResults": [ { "pass", "label", "key", "result" } ],
+  "structuredResults": [ { "pass", "label", "key", "result",
+                           "agentType?" } ],  // string (M2): agentType of the producing agent; used for typed-result dispatch
   "verdicts": { "<key>": "verdict text" },         // keyed by agentType key (same key as in allFindings)
   "verdictLabels": { "<key>": "<display label>" }, // human-readable label for each verdict key (agentType key → display label used in the Verdicts panel)
   "agentsCapped": false,                           // true when agent count exceeded MAX_AGENTS; webview shows a warning banner
   "isPinned": false,                               // true when cfg.pinnedDir is set and the pinned dir exists; shown in sidebar runId line and status-bar meta
-  "changed": ["relative/path", ...] | null       // files changed in repo in last 120s
+  "changed": ["relative/path", ...] | null,      // files changed in repo in last 900 s (15 minutes); null when git is unavailable
+  "changedByAgents": ["relative/path", ...]      // union of all filesChanged[] arrays from every agent's structured result; populated even when changed is empty
 }
 ```
 

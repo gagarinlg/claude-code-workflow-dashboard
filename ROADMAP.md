@@ -256,12 +256,28 @@ output renders in a tailored, readable view (with a generic fallback) — never 
       half of "Both" — ship the timeline first, graph second. Toggle in the Timeline
       tab header switches between Gantt and DAG views; state persists via `api.setState`.
 - [x] Panel toggles + remembered layout state, consistent with existing panels.
+- [x] **Tech-debt: `applyInlineSpans` bold regex cross-pair false-positive (LOW).** The
+      regex `\*\*([\s\S]+?)\*\*/g` could match across a legitimate `** … **` pair when
+      both markers existed but were not intended as Markdown bold (e.g. `** Note: see fix **`).
+      Fixed: capture group changed to `((?:[^*]|\*(?!\*))+)` which stops before any `**`
+      sequence, eliminating false-positive bold spans while keeping legitimate `**bold:**`
+      patterns intact. _(Spec v3 correction #10 / LOW closure finding — fixed in round-4.)_
 - [x] **M3-tech-debt: Shared walkWfDirs.** `listRecentRuns` and `findWorkflowDir` in
       `src/data/discovery.ts` now share a single `walkWfDirs(base)` traversal; both
       public functions are projections over its result, eliminating the duplicate
       O(N) readdirSync walk per polling tick. `findWorkflowDir` picks the highest-mtime
       entry; `listRecentRuns` sorts descending. A 2-second mtime cache remains a
       future improvement for burst-call scenarios.
+- [ ] **Tech-debt: worker_threads isolation for user-supplied roleRules regex.** The
+      structural `REDOS_DANGER_RE` guard in `src/data/parse.ts` rejects canonical
+      catastrophic-backtracking patterns (`(a+)+`, `([a-z]+)*`, etc.) before constructing
+      a `RegExp`. However it has a known gap: exotic alternation forms like `(a|a)+` can
+      evade the heuristic. The 50 ms elapsed-time trip-wire fires only after `test()`
+      returns, so a sufficiently crafted pattern still blocks the Extension Host event
+      loop for the duration of backtracking. The correct long-term fix is to run
+      user-supplied regex matching inside a `worker_threads` Worker with a hard
+      termination deadline — isolating any blocking from the Extension Host event loop.
+      _(Deferred from M2. Tracked here from `TODO(tech-debt)` in parse.ts.)_
 - [ ] **M3-tech-debt: Activation-context object in extension.ts.** The eleven
       module-level mutable variables (`latest`, `webviews`, `statusItem`, `watcher`,
       `watchedDir`, `editorPanel`, `outputChannel`, `pinnedDir`, `PINNED_RUN_KEY` and

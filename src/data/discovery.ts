@@ -99,7 +99,15 @@ export function formatRelativeTime(mtimeMs: number, nowMs: number = Date.now()):
 // Recursively find the newest .../workflows/wf_* directory under base.
 // Returns the single globally-newest wf_* dir by mtime (no date filter).
 // Implemented as the first-element projection over walkWfDirs() results, which
-// eliminates the previously duplicated tree traversal (one walk per tick, not two).
+// eliminates code duplication — both callers still invoke walkWfDirs() independently
+// at separate lifecycle points (see NOTE below).
+//
+// NOTE on per-tick I/O: findWorkflowDir() and listRecentRuns() both call walkWfDirs()
+// independently. They are invoked at separate points in the lifecycle (buildSnapshot vs.
+// runSelectRun), so they typically do not overlap on a single tick. A per-refresh cache
+// keyed by (base, timestamp) would halve I/O when the run picker is open simultaneously
+// with a snapshot build, but the overhead is bounded by depth=5 directory traversal and
+// is acceptable at 4-second polling intervals. This is logged as a tech-debt item in ROADMAP.md.
 export function findWorkflowDir(base: string, depth = 5): string | null {
   const runs = walkWfDirs(base, depth);
   if (runs.length === 0) return null;

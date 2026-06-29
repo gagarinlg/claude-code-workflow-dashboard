@@ -101,6 +101,7 @@ function buildFullTimelineHarness(
       fmtTLTimeFn, fmtElapsedSRFn, tlXFn,
       'var TL_LABEL_W=120;var TL_LANE_H=26;var TL_LANE_GAP=6;var TL_TICK_H=18;' +
       'var TL_K=80;var TL_BAR_CAP=40;var TL_TICK_SECS=[30,60,120,300,600,1200,1800];',
+      'var TL_LABEL_TRUNC=16;',
       'var DAG_LAYER_W=160;var DAG_NODE_W=130;var DAG_NODE_H=28;' +
       'var DAG_NODE_GAP=10;var DAG_PAD=16;var DAG_EDGE_COLOR_CLS="tl-dag-edge";',
       dagPanelFn,

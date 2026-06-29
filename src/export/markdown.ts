@@ -46,7 +46,8 @@ function s(v: unknown): string {
  * the JS version uses raw coercion (safeN result is already a number, no rounding).
  * Keep the >=1000 rounding logic (toFixed(1)k / toFixed(2)M) in sync between versions.
  * True deduplication is blocked: the webview version runs in the webview DOM context.
- * TODO(tech-debt): keep in sync with fmtTok in src/webview/js-panels.ts
+ * Tech-debt: keep in sync with fmtTok in src/webview/js-panels.ts
+ * See ROADMAP.md §"M2-tech-debt: deduplicate fmtTok" for the deduplication plan.
  */
 function fmtTok(n: number): string {
   if (!Number.isFinite(n) || n < 0) return '0';
@@ -99,14 +100,15 @@ function escCell(v: unknown): string {
  * would promote the preceding paragraph line to H1/H2 in GitHub-flavored Markdown.
  * The CommonMark spec requires only a single '=' or '-', so we must guard =+ and -+
  * (not just ={3,} or -{3,}).
- * Replaces double-asterisk sequences with a single asterisk (italic) to prevent
- * bold-span injection; ** in a value position would close the surrounding **Why:**
- * or **Fix:** bold span prematurely. Single * preserves visual emphasis intent
- * without forging bold structure.
+ * Replaces runs of 2+ asterisks with `\*` (a backslash-escaped asterisk) so the
+ * output is never interpreted as a Markdown italic/bold opener. The backslash escape
+ * renders the `*` character visually but prevents it from pairing with any surrounding
+ * asterisks to form italic/bold structure.
  * Neutralises Markdown inline links [text](url) by rendering as plain text with
  * the URL in parentheses — prevents external hyperlinks to attacker-chosen
  * destinations in GitHub/PR rendered views.
- * Escapes triple-backtick sequences to prevent code-fence injection.
+ * Escapes triple-backtick sequences to prevent code-fence injection (guard runs before
+ * the single-backtick replace so it has actual backtick characters to match).
  */
 /**
  * Regex that matches a Markdown inline link [text](url).
@@ -146,25 +148,36 @@ function escBody(v: unknown): string {
   // heading guard if defangLinks ran before it (the URL text is emitted after the
   // guard's replacement position). defangLinks itself strips newlines from the URL
   // portion, closing the heading-bypass via URL vector.
-  // The triple-backtick fence guard runs after defangLinks because no legitimate
-  // link text or URL contains ```.
+  // The backtick guards run after defangLinks: triple-backtick guard first, then
+  // single-backtick replace. This order ensures the ``` guard sees actual backtick
+  // characters (not yet replaced apostrophes). No legitimate link text or URL
+  // contains ``` so running them after defangLinks is safe.
   const processed = s(v)
     .trim()
     .replace(/\n{3,}/g, '\n\n')
     .replace(/(^|\n)(#{1,6} )/g, '$1> $2')
     .replace(/(^|\n)(=+|-+)(?=\s*(?:\n|$))/g, '$1\\$2')
-    // Bold-guard: replace runs of 2+ asterisks with a single '*' to prevent bold-span
-    // injection (** in a value would close or forge the surrounding **Why:** bold span).
-    // Edge case: a string consisting solely of asterisks (e.g. '**' or '****') becomes
-    // a lone '*', a dangling italic marker with no matching closer.
-    // The first replace strips any lone '*' surrounded only by whitespace or string
-    // boundaries so bare-asterisk inputs produce an empty-of-markers result.
-    // The second replace escapes any remaining lone asterisk that is not surrounded by
-    // word characters (e.g. '** text' → '* text' → escaped to avoid dangling italic opener).
-    .replace(/\*{2,}/g, '*')
-    .replace(/(^|\s)\*(\s|$)/gm, '$1$2')
-    .replace(/(^|\s)\*(\s)/gm, '$1\\*$2');
-  return defangLinks(processed).replace(/```/g, '\\`\\`\\`');
+    // Bold-guard: replace runs of 2+ asterisks with an escaped '\\*' (backslash-star)
+    // so the result is never interpreted as a Markdown italic/bold opener. A bare single
+    // '*' replacement was previously used but produced a dangling italic opener when the
+    // reduced '*' appeared adjacent to the surrounding **Why:** bold span in the template
+    // (e.g. '** Note:' → '* Note:' → '**Why:** * Note:' — the lone * has no closer).
+    // Using '\\*' escapes it: '** Note:' → '\\* Note:' → renders as literal '* Note:'.
+    .replace(/\*{2,}/g, '\\*')
+    // Escape lone (unescaped) * at whitespace or string boundaries to prevent any remaining
+    // dangling italic openers that slip past the ** guard above. Escaped as \\* rather than
+    // deleted so the character is preserved for readers (avoids silent data loss).
+    .replace(/(^|\s)\*(\s|$)/gm, '$1\\*$2');
+  // Backtick guards: a backtick inside a transcript-derived value can open or close
+  // an inline code span inside the surrounding **Why:** bold template, hiding content.
+  // Triple-backtick guard runs FIRST (before the single-backtick replace) so that it
+  // has actual backtick characters to match. If the single-backtick replace ran first,
+  // every backtick would already be an apostrophe and the ``` guard would be permanently
+  // unreachable. Applying both replacements in this order means: ``` → \`\`\` → the
+  // remaining single backticks (including those from the already-escaped triples) are
+  // then replaced by apostrophes, fully neutralising all code-fence and inline-code-span
+  // injection paths.
+  return defangLinks(processed).replace(/```/g, '\\`\\`\\`').replace(/`/g, "'");
 }
 
 /**
@@ -200,10 +213,15 @@ function escInlineCode(v: unknown): string {
  * Escape a transcript-derived value for use in a Markdown heading.
  * Strips embedded newlines/carriage returns (they would forge additional heading
  * levels or code fences in the rendered output) and trims whitespace.
+ * Replaces backtick characters with single-quotes: the heading template wraps
+ * severity in an inline code span (`${sev}`) — an injected backtick would close
+ * that span prematurely, producing malformed Markdown (cosmetic corruption only,
+ * not an injection vector, since newlines are stripped). Consistent with the same
+ * backtick replacement in escInlineCode.
  * Always use this — never s() or escBody() — when building a ### or #### line.
  */
 function escHeading(v: unknown): string {
-  return s(v).replace(/[\r\n]+/g, ' ').trim();
+  return s(v).replace(/[\r\n]+/g, ' ').replace(/`/g, "'").trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +239,10 @@ function buildHeader(snap: SnapshotOk, generatedAt: Date): string {
   // (where the date is obvious) but misleading in a standalone Markdown report.
   lines.push(`**Generated:** ${s(generatedAt.toISOString())}`);
   // Include the run's last-activity time as a secondary field for correlation.
-  if (snap.updatedAt) lines.push(`**Last activity:** ${s(snap.updatedAt)}`);
+  // escBody() rather than s(): defense-in-depth — updatedAt is currently generated by
+  // new Date().toISOString() so attacker control is impossible, but if the source ever
+  // changes (e.g. read from the journal), the escaping is already in place.
+  if (snap.updatedAt) lines.push(`**Last activity:** ${escBody(snap.updatedAt)}`);
   if (snap.isPinned) lines.push(`**Note:** Pinned run`);
   lines.push('');
   return lines.join('\n');
