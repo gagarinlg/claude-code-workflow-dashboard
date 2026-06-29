@@ -437,7 +437,7 @@ export const CSS_SIDEBAR = `
 body{margin:0;font:12px var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-sideBar-background);overflow-x:hidden}
 .dim{opacity:.6}.pad{padding:10px}
 .sb-header{display:flex;align-items:center;gap:6px;padding:8px 10px 4px;border-bottom:1px solid var(--vscode-panel-border);flex-wrap:wrap;overflow-x:hidden}
-.sb-title{font-weight:600;font-size:11px;letter-spacing:.04em;text-transform:uppercase;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sb-title{font-weight:600;font-size:11px;letter-spacing:.04em;text-transform:uppercase;flex:0 0 auto;white-space:nowrap;margin-right:auto}
 /* Sidebar action buttons: uniform height via min-height + line-height:1 so mixed glyphs
    (⛐ ↧ ⤢) don't inflate individual buttons. The .sb-btn-lbl text is always shown so
    sighted users have a visible label alongside the glyph — icon-only is not accessible
