@@ -20,7 +20,7 @@
 // Sub-module layout (all under src/webview/):
 //   css.ts         — CSS + CSS_SIDEBAR constants (~320 lines)
 //   js-sidebar.ts  — JS_SIDEBAR constant (~105 lines, sidebar render loop)
-//   js-panels.ts   — JS_PANELS constant (~1030 lines, panel functions + render)
+//   js-panels.ts   — JS_PANELS constant (~1510 lines, panel functions + render)
 //   js-wire.ts     — JS_WIRE constant (~90 lines, wire() + render() call)
 
 import { CSS, CSS_SIDEBAR } from './css';

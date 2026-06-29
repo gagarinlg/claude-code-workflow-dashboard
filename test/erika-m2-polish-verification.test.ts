@@ -92,7 +92,7 @@ function makeSnap(overrides: Partial<SnapshotOk> = {}): SnapshotOk {
     agentsCapped: false,
     loop: {
       phase: 'idle / between passes',
-      live: 0, done: 2, dead: 0, total: 2,
+      live: 0, done: 2, dead: 0, superseded: 0, total: 2,
       outTok: 1500, tools: 8, passes: 1, findings: 1,
       sevTotals: { HIGH: 1 },
     },

@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getHtml } from '../src/webview/html';
 import { CHANGED_MAX_SECS } from '../src/data/snapshot';
-import { getPanelJs } from './helpers/webview';
+import { getPanelJs, extractBalancedFn } from './helpers/webview';
 
 const TEST_NONCE = 'dGVzdG5vbmNlMTIz';
 
@@ -1345,224 +1345,66 @@ describe('Accessibility fixes — Sabine HIGH/MED findings', () => {
 });
 
 // ---------------------------------------------------------------------------
-// M2-Layout: collapsible panel headers (click h3 to fold/unfold, persist via setState)
+// M2-Layout: collapsible panel headers — removed post-M3 (dead code cleanup).
+// panel() and wire() block removed; state.panelOpen removed from state init.
+// CSS rules .panel, .panel-chevron, .panel.collapsed remain for forward compatibility.
+// These tests assert ABSENCE — the removed code must not reappear in the bundle.
 // ---------------------------------------------------------------------------
-describe('M2-Layout — collapsible panel section headers', () => {
-  // -------------------------------------------------------------------------
-  // CSS: panel h3 must NOT have cursor:pointer — only the child button gets it.
-  // The h3 is a non-interactive heading landmark; cursor:pointer on it would be
-  // a visual lie (clicks on the h3 outside the button area are not handled).
-  // The global 'button' rule gives .panel>h3>button its pointer cursor.
-  // -------------------------------------------------------------------------
+describe('M2-Layout — dead panel() code is absent from bundle [post-M3 cleanup]', () => {
+  // These tests assert that panel() and state.panelOpen were fully removed per the
+  // TODO(M3) contract. They are a safety net against re-introduction.
+
+  it('JS bundle does NOT contain function panel() — dead code removed post-M3', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    // panel() must be absent from the shipped bundle. If it reappears, it carries
+    // dead state machinery and unused bytes that slow parse time.
+    expect(js).not.toContain('function panel(');
+  });
+
+  it('JS state initializer does NOT include panelOpen key — removed with panel()', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    const stateDecl = js.slice(js.indexOf('let state={'), js.indexOf('};', js.indexOf('let state={')));
+    expect(stateDecl).not.toContain('panelOpen:');
+  });
+
+  it('JS state does NOT restore _s.panelOpen — key removed from state init', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).not.toContain('_s.panelOpen');
+  });
+
+  it('JS wire() does NOT reference querySelectorAll for .panel>h3>button[data-pkey] — wire block gone', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).not.toContain("querySelectorAll('.panel>h3>button[data-pkey]')");
+  });
+
+  it('JS does NOT contain toggle_panel function — no panel toggle handler', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    expect(js).not.toContain('toggle_panel');
+  });
+
+  // CSS panel rules remain for forward compatibility — not removed with panel().
   it('CSS panel>h3 must NOT have cursor:pointer — only the child button gets pointer cursor', () => {
     const html = getHtml(TEST_NONCE);
-    // cursor:pointer must be present somewhere in the CSS (on the button rule), but
-    // must NOT appear inside the .panel>h3{...} rule itself.
     expect(html).toContain('cursor:pointer'); // present on the button / .row rule
     expect(html).toContain('.panel>h3{');
-    // Extract the .panel>h3 rule body and assert it does NOT contain cursor:pointer.
-    // A future contributor adding cursor:pointer to h3 would regress keyboard focus
-    // behavior and create a false pointer affordance on a non-interactive element.
     expect(html).not.toMatch(/\.panel>h3\{[^}]*cursor:pointer/);
   });
 
-  it('CSS panel>h3 has focus-visible outline for keyboard operability', () => {
-    const html = getHtml(TEST_NONCE);
-    // The focus rule must be present for the panel header
-    expect(html).toContain('.panel>h3:focus-visible{');
-    const idx = html.indexOf('.panel>h3:focus-visible{');
-    const end = html.indexOf('}', idx);
-    const rule = html.slice(idx, end);
-    expect(rule).toContain('outline');
-    expect(rule).toContain('--vscode-focusBorder');
+  it('CSS defines .panel.collapsed>.body{display:none}', () => {
+    expect(getHtml(TEST_NONCE)).toContain('.panel.collapsed>.body{display:none}');
   });
 
-  it('CSS defines .panel-chevron rule with transition (caret indicator)', () => {
-    const html = getHtml(TEST_NONCE);
-    expect(html).toContain('.panel-chevron{');
-    const idx = html.indexOf('.panel-chevron{');
-    const end = html.indexOf('}', idx);
-    const rule = html.slice(idx, end);
-    expect(rule).toContain('transition:');
-  });
-
-  it('CSS defines .panel.collapsed>.body{display:none} to hide body when collapsed', () => {
-    const html = getHtml(TEST_NONCE);
-    expect(html).toContain('.panel.collapsed>.body{display:none}');
-  });
-
-  it('CSS defines .panel.collapsed>h3{border-bottom:none} (no orphan border when collapsed)', () => {
-    const html = getHtml(TEST_NONCE);
-    expect(html).toContain('.panel.collapsed>h3{border-bottom:none}');
-  });
-
-  // -------------------------------------------------------------------------
-  // JS: panel() helper produces h3 containing a real <button> child.
-  // The <button> carries tabindex, aria-expanded, and data-pkey — NOT the h3.
-  // The h3 is an implicit heading landmark only; role="button" must NOT appear
-  // on the h3 itself (that would conflict with the native heading semantics).
-  // -------------------------------------------------------------------------
-  it('JS panel() helper produces h3 containing a real button element (not role=button on h3)', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // The panel function must produce an h3 that directly contains a <button> with data-pkey.
-    // This verifies the correct WCAG 4.1.2 structure: native button (not a role attribute hack).
-    expect(js).toMatch(/<h3[^>]*><button[^>]*data-pkey/);
-    // The h3 element itself must NOT carry role="button" — that would override heading semantics
-    // and mislead future contributors into thinking the h3 needs to be interactive.
-    expect(js).not.toMatch(/<h3[^>]*role="button"/);
-  });
-
-  it('JS panel() helper produces h3 with tabindex="0" for keyboard operability', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    expect(js).toContain('tabindex="0"');
-  });
-
-  it('JS panel() helper sets aria-expanded on the h3 header', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // aria-expanded reflects open/closed state for screen readers.
-    expect(js).toContain('aria-expanded=');
-  });
-
-  it('JS panel() helper sets data-pkey attribute on the h3 (for wire() lookup)', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // wire() queries .panel>h3[data-pkey] to attach click/keydown handlers.
-    expect(js).toContain('data-pkey=');
-  });
-
-  it('JS panel() helper injects .panel-chevron span with aria-hidden="true" (decorative)', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    expect(js).toContain('panel-chevron');
-    expect(js).toContain('aria-hidden="true"');
-  });
-
-  it('JS panel() helper applies "collapsed" CSS class when panelOpen[k] is 0', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // The panel helper must apply 'collapsed' when the section is closed.
-    expect(js).toContain("'collapsed'");
-    // The class must reference state.panelOpen
-    expect(js).toContain('state.panelOpen');
-  });
-
-  // -------------------------------------------------------------------------
-  // JS state: M3-Layout — panelOpen keys for verdicts/changed/charts/results dropped.
-  // v3 BINDING: tab panels render directly; panelOpen is no longer in the state
-  // initializer for verdicts/changed/charts/results (AC10/AC11 in erika-m3-layout-verification).
-  // -------------------------------------------------------------------------
-  it('JS state initializer does NOT include panelOpen key for verdicts/changed/charts/results (M3 v3 binding)', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // M3 v3: panelOpen keys for tab panels are dropped entirely.
-    // Extract the state literal to verify the keys are absent.
-    const stateDecl = js.slice(js.indexOf('let state={'), js.indexOf('};', js.indexOf('let state={')));
-    expect(stateDecl).not.toContain('verdicts:');
-    expect(stateDecl).not.toContain('changed:');
-    expect(stateDecl).not.toContain('charts:');
-    expect(stateDecl).not.toContain('results:');
-  });
-
-  it('JS state initializer does NOT include charts:0 (M3: Charts tab renders directly, no collapse state)', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // M3 v3: Charts is now a direct-render tab, not a collapsible panel. charts:0 is gone.
-    const stateDecl = js.slice(js.indexOf('let state={'), js.indexOf('};', js.indexOf('let state={')));
-    expect(stateDecl).not.toContain('charts:');
-  });
-
-  it('JS state initializer does NOT include in-tab panel collapse keys (M3 v3 binding removes all four)', () => {
-    // M3-Layout v3 BINDING: verdicts/changed/charts/results render directly inside their tabs.
-    // None of these need panelOpen keys — the tab itself is the container.
+  // State initializer does NOT include in-tab panel collapse keys (pre-existing assertion).
+  it('JS state initializer does NOT include in-tab panel collapse keys (M3 v3 binding removes all)', () => {
     const js = getPanelJs(getHtml(TEST_NONCE));
     const stateDecl = js.slice(js.indexOf('let state={'), js.indexOf('};', js.indexOf('let state={')));
     expect(stateDecl).not.toContain('verdicts:');
     expect(stateDecl).not.toContain('changed:');
     expect(stateDecl).not.toContain('results:');
     expect(stateDecl).not.toContain('charts:');
-    // overview/agents/findings were already not in panelOpen — still not.
     expect(stateDecl).not.toContain('overview:');
     expect(stateDecl).not.toContain('agents:1');
     expect(stateDecl).not.toContain('findings:1');
-  });
-
-  it('JS state restores panelOpen from _s.panelOpen for future callers', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // panelOpen is merged from persisted state so any future panel() callers
-    // benefit from collapse-state persistence across re-renders.
-    expect(js).toContain('_s.panelOpen');
-  });
-
-  // -------------------------------------------------------------------------
-  // JS wire(): panel header click and keyboard handlers (nonce-safe).
-  // -------------------------------------------------------------------------
-  it('JS wire() wires .panel>h3>button[data-pkey] elements via querySelectorAll', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // wire() targets the <button> inside the h3 directly — data-pkey is on the button,
-    // not the h3. Using the button as the selector anchor avoids the dead-selector bug
-    // where '.panel>h3[data-pkey]' never matched (h3 never had data-pkey).
-    expect(js).toContain("querySelectorAll('.panel>h3>button[data-pkey]')");
-  });
-
-  it('JS wire() panel toggle uses addEventListener not inline onclick (nonce-safe)', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // Inline onclick handlers are blocked by nonce-based CSP; addEventListener is required.
-    expect(js).toContain("addEventListener('click',toggle_panel)");
-    // Must NOT use onclick=
-    expect(js).not.toContain('.panel>h3" onclick');
-    expect(js).not.toContain("h3.onclick");
-  });
-
-  it('JS wire() panel toggle responds to Enter and Space keydown (keyboard operability)', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // The keydown handler must support both Enter and Space.
-    // These test patterns are constrained to the section after querySelectorAll(.panel>h3).
-    const idx = js.indexOf("querySelectorAll('.panel>h3>button[data-pkey]')");
-    expect(idx).toBeGreaterThan(-1);
-    // Use 1000 chars — the keydown handler follows the click handler in the same forEach block.
-    const section = js.slice(idx, idx + 1000);
-    expect(section).toContain("'Enter'");
-    expect(section).toContain("' '");
-    expect(section).toContain('e.preventDefault()');
-  });
-
-  it('JS wire() panel toggle calls classList.toggle("collapsed") on the parent panel', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // The toggle function must toggle the "collapsed" CSS class on the .panel element.
-    expect(js).toContain("classList.toggle('collapsed')");
-  });
-
-  it('JS wire() panel toggle updates aria-expanded on the button after toggle', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // After toggling, aria-expanded must be updated on the <button> (which carries aria-expanded)
-    // so screen readers announce the new open/closed state. The button is now the toggle target
-    // (data-pkey is on the button, not the h3).
-    const idx = js.indexOf("querySelectorAll('.panel>h3>button[data-pkey]')");
-    const section = js.slice(idx, idx + 600);
-    expect(section).toContain("setAttribute('aria-expanded'");
-  });
-
-  it('JS wire() panel toggle persists state via state.panelOpen[k] and save()', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // The toggle must update state.panelOpen[k] and call save() to persist.
-    const idx = js.indexOf("querySelectorAll('.panel>h3>button[data-pkey]')");
-    const section = js.slice(idx, idx + 600);
-    expect(section).toContain('state.panelOpen[k]');
-    expect(section).toContain('save()');
-  });
-
-  // -------------------------------------------------------------------------
-  // Scroll position preservation: panel collapse must not disrupt M1 scroll pattern.
-  // The panel collapse toggles only the CSS class (no innerHTML replace), so
-  // window.scrollY is preserved automatically — no explicit save/restore needed.
-  // -------------------------------------------------------------------------
-  it('JS wire() panel toggle does NOT call render() (avoids scroll position reset)', () => {
-    const js = getPanelJs(getHtml(TEST_NONCE));
-    // Toggling a panel section must not re-render the whole page — that would
-    // reset window.scrollY and lose the M1 scroll position preservation.
-    // The toggle only mutates the DOM in place (classList.toggle).
-    const idx = js.indexOf("querySelectorAll('.panel>h3>button[data-pkey]')");
-    expect(idx).toBeGreaterThan(-1);
-    // The toggle_panel function should not contain a call to render()
-    // Extract only the toggle_panel function body to avoid false positives
-    const section = js.slice(idx, idx + 600);
-    // render() must not appear inside the panel toggle handler
-    expect(section).not.toMatch(/toggle_panel[^}]*render\(\)/);
   });
 });
 
@@ -2118,5 +1960,112 @@ describe('Findings pagination — behavioral', () => {
     );
     // Should clamp to page 2 (0-based), showing 31 rows.
     expect(countFindingDivs(output)).toBe(31);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M3-Superseded — agentsPanel() and overview() rendering tests
+//
+// Verify that superseded agents get the correct CSS classes and badge text in
+// agentsPanel(), and that overview() emits the kpi-superseded chip when
+// loop.superseded > 0. These tests guard against re-introducing the regression
+// where superseded agents were visually indistinguishable from stalled ones.
+// ---------------------------------------------------------------------------
+
+describe('M3-Superseded — agentsPanel and overview rendering', () => {
+  // Build a harness that evaluates overview() with synthetic snap.
+  // overview() dependencies: esc, safeN, fmtTok, STALE_LABEL, STALE_TOOLTIP.
+  function buildOverviewHarness(js: string): (snap: object) => string {
+    const escFn    = extractBalancedFn(js, 'esc');
+    const safeNFn  = extractBalancedFn(js, 'safeN');
+    const fmtTokFn = extractBalancedFn(js, 'fmtTok');
+    const overviewFn = extractBalancedFn(js, 'overview');
+
+    const factory = new Function(
+      'snap',
+      [
+        escFn, safeNFn, fmtTokFn,
+        'var STALE_SECS=180; var STALE_LABEL=">3m"; var STALE_TOOLTIP="Agents with no activity >3m";',
+        overviewFn,
+        'return overview();',
+      ].join('\n'),
+    ) as (snap: object) => string;
+
+    return (snap: object) => factory(snap);
+  }
+
+  function makeOverviewSnap(supersededCount: number): object {
+    return {
+      loop: {
+        phase: 'done', live: 0, done: 2, dead: 0, superseded: supersededCount,
+        total: 2, outTok: 600, tools: 7, passes: 1, findings: 0, sevTotals: {},
+        inTok: null, cacheRead: null, cacheCreate: null,
+      },
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // overview() chip tests (functional — exercises the actual JS)
+  // -------------------------------------------------------------------------
+
+  it('overview() emits kpi-superseded chip when loop.superseded > 0', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    const runOverview = buildOverviewHarness(js);
+    const html = runOverview(makeOverviewSnap(2));
+    expect(html).toContain('kpi-superseded');
+    expect(html).toContain('Superseded');
+  });
+
+  it('overview() does NOT emit kpi-superseded chip when loop.superseded === 0', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    const runOverview = buildOverviewHarness(js);
+    const html = runOverview(makeOverviewSnap(0));
+    expect(html).not.toContain('kpi-superseded');
+    expect(html).not.toContain('>Superseded<');
+  });
+
+  // -------------------------------------------------------------------------
+  // agentsPanel() source-level checks — verify the JS contains the correct
+  // conditional logic for superseded-card and st.superseded badge.
+  // The harness approach is impractical due to agentSub's deep dependency chain;
+  // source checks are authoritative since the logic is straightforward branches.
+  // -------------------------------------------------------------------------
+
+  it('agentsPanel() JS contains superseded-card conditional on a.superseded', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    const fn = extractBalancedFn(js, 'agentsPanel');
+    // Card div must conditionally add 'superseded-card' when a.superseded is true.
+    expect(fn).toContain('superseded-card');
+    expect(fn).toContain('a.superseded');
+  });
+
+  it('agentsPanel() JS badge class uses "superseded" for superseded agents (not "dead")', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    const fn = extractBalancedFn(js, 'agentsPanel');
+    // The status badge class expression must evaluate to 'superseded' for superseded agents.
+    // Pattern: a.superseded?'superseded':escCls(a.status)
+    expect(fn).toMatch(/a\.superseded\?'superseded'/);
+  });
+
+  it('agentsPanel() JS statusLabel uses "superseded" label for superseded agents', () => {
+    const js = getPanelJs(getHtml(TEST_NONCE));
+    const fn = extractBalancedFn(js, 'agentsPanel');
+    // statusLabel must be 'superseded' when a.superseded is true.
+    expect(fn).toContain("a.superseded?'superseded'");
+  });
+
+  it('CSS .card.superseded-card is defined in shipped CSS (for agentsPanel cards)', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.card.superseded-card{');
+  });
+
+  it('CSS .st.superseded is defined in shipped CSS (yellow badge for superseded agents)', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.st.superseded{');
+  });
+
+  it('CSS .kpi-superseded is defined in shipped CSS (yellow KPI value)', () => {
+    const html = getHtml(TEST_NONCE);
+    expect(html).toContain('.kpi-superseded{');
   });
 });

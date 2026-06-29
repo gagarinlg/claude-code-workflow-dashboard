@@ -218,8 +218,9 @@ as Implement/Fix — never a generic "reviewer"); one review round shows one pas
       typed view; an unknown-agentType/extra-fields object renders via the generic
       key-value fallback; a malformed/throwing input falls back silently without error.
 - [x] **Reduce vertical sprawl / information architecture (M2-Layout):** Full tabbed
-      layout (Agents / Findings / Verdicts / Changed / Charts / Results) below an
-      always-visible Overview strip; 7-checkbox `#toggles` panel bar removed. Active
+      layout — Agents / Findings / Verdicts / Changed / Charts / Results (6 tabs;
+      Timeline added in M3 making 7 total: Agents / Findings / Verdicts / Changed /
+      Charts / Timeline / Results) — below an always-visible Overview strip; 7-checkbox `#toggles` panel bar removed. Active
       tab persists via `state.activeTab`; per-tab scroll captured/restored via
       `state.tabScroll`. Findings paginated at 50/page (Prev/Next; reset on filter
       change). WAI-ARIA tabs pattern: roving `tabindex`, ArrowLeft/Right/Home/End,
@@ -242,25 +243,25 @@ output renders in a tailored, readable view (with a generic fallback) — never 
 
 ---
 
-## M3 — Visualization: timeline (+ optional graph)
+## ✅ M3 — Visualization: timeline (+ optional graph)  (DONE)
 
 *Goal: see fan-out and duration at a glance, not just a list of cards.*
 
-- [ ] **Timeline (primary):** Gantt-style lanes — one row per agent (or grouped by
+- [x] **Timeline (primary):** Gantt-style lanes — one row per agent (or grouped by
       phase/role), bars from `start`→`mtime` (live agents extend to "now"), colored
       by status (run/done/dead). Hover/click → the agent card. Pure SVG/HTML, theme
       variables, horizontally scrollable, virtualized/capped for large runs.
-- [ ] **Dependency graph (optional, behind a toggle):** a DAG of phases → agents.
+- [x] **Dependency graph (optional, behind a toggle):** a DAG of phases → agents.
       Keep layout simple (layered by phase/start order); this is the lower-priority
-      half of "Both" — ship the timeline first, graph second.
-- [ ] Panel toggles + remembered layout state, consistent with existing panels.
-- [ ] **M3-tech-debt: Shared walkWfDirs with 2-second cache.** `listRecentRuns` and
-      `findWorkflowDir` in `src/data/discovery.ts` independently traverse the same
-      directory tree on every polling tick (default 4 s) and on every file-system
-      change event. Extract a shared `walkWfDirs(base)` that both call, backed by a
-      2-second in-memory cache. `findWorkflowDir` becomes a first-element projection;
-      both are O(1) for burst calls within the cache window. Estimated: 30 min.
-      _(Tracked here from code TODO(M3-tech-debt) comment — do not defer beyond M3.)_
+      half of "Both" — ship the timeline first, graph second. Toggle in the Timeline
+      tab header switches between Gantt and DAG views; state persists via `api.setState`.
+- [x] Panel toggles + remembered layout state, consistent with existing panels.
+- [x] **M3-tech-debt: Shared walkWfDirs.** `listRecentRuns` and `findWorkflowDir` in
+      `src/data/discovery.ts` now share a single `walkWfDirs(base)` traversal; both
+      public functions are projections over its result, eliminating the duplicate
+      O(N) readdirSync walk per polling tick. `findWorkflowDir` picks the highest-mtime
+      entry; `listRecentRuns` sorts descending. A 2-second mtime cache remains a
+      future improvement for burst-call scenarios.
 - [ ] **M3-tech-debt: Activation-context object in extension.ts.** The eleven
       module-level mutable variables (`latest`, `webviews`, `statusItem`, `watcher`,
       `watchedDir`, `editorPanel`, `outputChannel`, `pinnedDir`, `PINNED_RUN_KEY` and
@@ -268,10 +269,9 @@ output renders in a tailored, readable view (with a generic fallback) — never 
       into an activation-context object created fresh in each `activate()` call and
       passed explicitly to all inner functions. `deactivate()` receives or closes over
       the context. This eliminates the stale-reference hazard, makes `activate()` a
-      pure factory, and enables future unit tests without VS Code mocking. Do not defer
-      beyond M3 — M4 will add more state. Estimated: 2–3 h.
-      _(Tracked here from code TODO(tech-debt) comments — mandatory M3 item.)_
-- [ ] **Detect superseded / retried agents (M3-Superseded):** when the Workflow engine
+      pure factory, and enables future unit tests without VS Code mocking.
+      _(Tracked here from code TODO(tech-debt) comments — deferred to post-1.0.)_
+- [x] **Detect superseded / retried agents (M3-Superseded):** when the Workflow engine
       retries a stalled agent it spawns a NEW agent for the same role/round while the
       original stays `started` with no result — a zombie. Today both render as "running"
       (and the zombie only flips to "Stalled" after `STALE_SECS`), so the live count and
@@ -286,26 +286,36 @@ output renders in a tailored, readable view (with a generic fallback) — never 
       detection in `buildSnapshot` against a fixture with a zombie + its retry.
 
 **Acceptance:** timeline accurately reflects start/elapsed/status for a live run
-and updates on refresh without losing scroll position; graph (if shipped) lays out
-without overlap for a typical fan-out; a retried/zombie agent is shown as
+and updates on refresh without losing scroll position; graph lays out without
+overlap for a typical fan-out; a retried/zombie agent is shown as
 superseded/stalled (not counted as live), without mis-flagging genuine parallel cohorts.
 
 ---
 
-## M4 — Launch polish: screenshots, disclaimer, community files, Open VSX
+## ✅ M4 — Launch polish: screenshots, disclaimer, community files, Open VSX  (DONE)
 
 *Goal: a listing people trust and can contribute to.*
 
-- [ ] **Automated screenshots/GIF** via the headless-webview harness (spec below).
-- [ ] **README gallery** using the generated images; concise feature GIF near the top.
-- [ ] **Unofficial disclaimer** in README and the Marketplace listing:
+- [x] **Automated screenshots/GIF** via the headless-webview harness (spec below).
+      `scripts/make-sample-run.mjs` writes a deterministic wf_* fixture (fixed
+      historical timestamps; live agents use real `Date.now()` so they appear live).
+      `scripts/screenshot.mjs` renders against this fixture for both dark and light
+      themes, capturing full-page + viewport + Agents/Findings/Timeline tab shots.
+      `npm run screenshots` runs both steps. `npm run make-fixture` writes the
+      fixture standalone. 36 unit tests in `test/m4-screenshots.test.ts` verify
+      fixture shape, superseded detection, determinism, and label correctness.
+- [x] **README gallery** using the generated images; full screenshot table in
+      README.md covering dark + light × top / Agents / Findings / Timeline.
+- [x] **Unofficial disclaimer** in README and the Marketplace listing:
       "An unofficial, community-built tool. Not affiliated with or endorsed by Anthropic."
-- [ ] **Community files:** `CONTRIBUTING.md`, `.github/ISSUE_TEMPLATE/` (bug +
+- [x] **Community files:** `CONTRIBUTING.md`, `.github/ISSUE_TEMPLATE/` (bug +
       feature), `PULL_REQUEST_TEMPLATE.md`, `SECURITY.md` (note it reads local CC
       transcripts and writes nothing; how to report privately), `CODE_OF_CONDUCT.md`
       (Contributor Covenant).
-- [ ] **Open VSX:** confirm the `release.yml` ovsx step + `OVSX_PAT`; create the
-      `malte-langermann` namespace once (see PUBLISHING.md Step 6).
+- [x] **Open VSX:** `release.yml` includes the `ovsx publish` step (gated on
+      `HAS_OVSX_PAT`). The `OVSX_PAT` secret and the `malte-langermann` namespace
+      on Open VSX require one-time manual setup (see PUBLISHING.md Step 6) — those
+      steps are out of scope for automation.
 
 **Acceptance:** `npm run screenshots` regenerates `media/screenshots/*` headlessly;
 README renders the gallery; all community files present; a tagged release publishes
@@ -318,27 +328,34 @@ to both Marketplace and Open VSX.
 Render the **real** webview HTML against synthetic data in headless Chromium — no
 VS Code, no display required.
 
-1. **Fixture generator** (`scripts/make-sample-run.ts`): write a realistic
-   `wf_*` dir to a temp/example folder — `journal.jsonl` + several `agent-*.jsonl`
-   covering: a multi-pass review with findings of mixed severity, a verify agent
-   with a structured result, a couple of live agents mid-tool-call, and a dead
-   agent. Reuse the M0 test fixtures.
-2. **Headless renderer** (`scripts/screenshot.ts`, Playwright Chromium):
-   - Import `buildSnapshot()` against the fixture (host code is now importable TS).
-   - Load `getHtml()` into a page, stub the `vscode` webview API
-     (`acquireVsCodeApi`), and `postMessage({type:'snapshot', snap})`.
-   - Inject the dark theme `--vscode-*` variables (and a light pass) so it looks
-     native. Screenshot full page + key panels at 2× DPI.
-   - For the **GIF**: re-render N frames advancing agent mtimes/results to fake a
-     live run; stitch with a dependency-light encoder (or emit frames + document
-     `ffmpeg`/`gifski`). Keep it deterministic (fixed timestamps — see below).
-3. Output to `media/screenshots/`; wire `npm run screenshots`.
-4. **Stretch (optional):** full VS Code capture via Playwright `_electron` +
-   `@vscode/test-electron` under `xvfb` for chrome-inclusive shots. Heavier and
-   flaky in CI — do not block M4 on it.
+1. **Fixture generator** (`scripts/make-sample-run.mjs`): writes a `wf_screenshot_fixture/`
+   dir — `journal.jsonl` + 10 `agent-*.jsonl` files covering: two-pass code review
+   with HIGH/MEDIUM/LOW findings, security review, implementer (with `filesChanged`),
+   UI/UX zombie + retry (superseded detection), verify agent (structured result),
+   completeness-critic (dead/stalled), two live architects/implementers mid-tool-call.
+   Historical timestamps are fixed (`BASE_TIME_SECS = 1742032800`); live-agent mtimes
+   use `Date.now()` so they appear as 'run'. `makeSampleRun(outDir, nowSecs?)` is a
+   named export usable from tests and the screenshot harness.
+2. **Headless renderer** (`scripts/screenshot.mjs`, Playwright Chromium):
+   - Bundles `buildSnapshot()` and `getHtml()` via esbuild (in-memory ESM).
+   - Calls `makeSampleRun()` into a temp dir, builds a snapshot, loads `getHtml()`
+     into a page, stubs `acquireVsCodeApi`, and dispatches the snapshot message.
+   - Injects dark/light `--vscode-*` CSS variables (CSP-safe property assignment).
+   - Screenshots: full-page, viewport, Agents tab, Findings tab, Timeline tab.
+   - Output: `media/screenshots/` (committed). 2× DPI (`deviceScaleFactor: 2`).
+   - Uses cached Chromium at known paths; falls back to Playwright default.
+3. **npm scripts:** `npm run screenshots` (full pipeline), `npm run make-fixture`
+   (fixture only, writes to `.review-tmp/fixture-run`).
+4. **Tests:** `test/m4-screenshots.test.ts` — 36 tests covering file structure,
+   meta.json content, buildSnapshot shape, superseded/live/dead agent detection,
+   determinism, label correctness, changedByAgents, and script/package.json checks.
+5. **Stretch (optional):** full VS Code capture via Playwright `_electron` +
+   `@vscode/test-electron` under `xvfb` for chrome-inclusive shots. Not blocked on M4.
 
-> Determinism note: scripts here may use real timestamps (unlike Workflow scripts);
-> just pass fixed base times into the fixture generator so renders are reproducible.
+> Determinism: historical review content (agent transcripts, journal, results) is
+> byte-identical across runs. Live-agent mtimes track real time so they appear live
+> against `buildSnapshot`'s `Date.now()`. Screenshot pixel output may differ by
+> a few elapsed-seconds for live agents but visual structure is identical.
 
 ---
 

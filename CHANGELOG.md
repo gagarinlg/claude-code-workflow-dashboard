@@ -1,6 +1,89 @@
 # Change Log
 
-## [0.7.0] — 2026-06-28
+## [1.0.0] — 2026-06-29 — M3 + M4 launch
+
+### M3-Timeline — Gantt visualization
+
+- **Timeline tab** (new, after Charts): Gantt-style lanes showing one row per agent,
+  bars from `start` to finish (`mtime`). Live agents extend to "now" via a
+  continuously-updated elapsed marker. Bars are colored by status (run → green,
+  done → blue, dead → muted, superseded → striped). Horizontally scrollable at any
+  zoom level.
+- **Zoom controls** — `−`/`+` buttons in the Timeline header adjust zoom (0.5×–4×
+  in steps). Zoom level persists via `api.setState` and survives snapshot re-renders.
+- **Dependency graph (DAG view)** — a toggle in the Timeline header switches between
+  Gantt lanes and a layered DAG of phases → agents (by start-time order). The DAG
+  is rendered as pure SVG with theme-native colors and a screen-reader accessible
+  summary table. Toggle state persists via `state.timelineView`.
+- **Click to focus** — clicking a timeline lane or a DAG node scrolls the Agents tab
+  to the corresponding card and briefly highlights it.
+- Keyboard-accessible: timeline view buttons are real `<button>` elements with
+  `aria-pressed`; the SVG carries an `aria-label` with agent and pass counts; a
+  hidden `<table>` provides screen-reader data for both Gantt and DAG views.
+
+### M3-Superseded — Zombie agent detection
+
+- **Superseded agent detection** in `buildSnapshot` (`src/data/snapshot.ts`): when
+  the workflow engine retries a stalled agent it spawns a new agent for the same
+  role/round while the original remains started with no result. The earlier agent
+  is now flagged `superseded=true` and excluded from the live count. Detection
+  criteria: same role key (derived from label via `classify()`), status `dead`,
+  no result, elapsed < 120 s, and a later-starting agent with the same role key
+  exists. Defensive: genuine parallel fan-out cohorts (multiple legitimate same-role
+  agents in one pass) are never mis-flagged.
+- Superseded agents appear in the timeline with a distinct visual treatment
+  (striped bar, muted label) and are excluded from the **loop overview** live count.
+  The Overview strip shows a "Superseded" KPI chip (`.kpi-superseded`, yellow) when the
+  count is greater than zero. The Agents tab shows a yellow "superseded" badge (`.st.superseded`)
+  and a dimmed card (`.card.superseded-card`) for superseded agents.
+- Unit tests for superseded detection in `test/snapshot.test.ts` (primary coverage)
+  and `test/m4-screenshots.test.ts` cover zombie + retry fixtures and confirm
+  non-mis-flagging of parallel cohorts.
+
+### M4-Screenshots — Deterministic fixture-based screenshot harness
+
+- **`scripts/make-sample-run.mjs`** — fixture generator that writes a realistic,
+  deterministic `wf_screenshot_fixture/` directory: a multi-pass code review +
+  security review with HIGH/MEDIUM/LOW findings; an implementer with `filesChanged`;
+  a verify agent with a structured result; two live agents mid-tool-call; a dead
+  completeness-critic; and a superseded UI/UX zombie + its retry (exercises M3
+  superseded detection). Historical timestamps are fixed at `BASE_TIME_SECS =
+  1742032800` (2025-03-15T10:00:00Z); live-agent mtimes use real `Date.now()` so
+  they appear as 'run' against `buildSnapshot`. Named export: `makeSampleRun(outDir,
+  nowSecs?)`.
+- **`scripts/screenshot.mjs` refactored** — renders against the above fixture
+  (not a live `~/.claude` run) for reproducible output. Per-theme (dark + light)
+  captures: full-page, viewport, Agents tab, Findings tab, Timeline tab. Output to
+  `media/screenshots/` (committed). Uses cached Chromium; documented install path.
+- **`npm run make-fixture`** — standalone fixture generation script.
+- **`npm run screenshots`** — generates fixture then renders (single step, no
+  network required).
+- **`test/m4-screenshots.test.ts`** — 59 unit tests covering file structure,
+  meta.json content, buildSnapshot shape, superseded/live/dead detection, label
+  correctness, changedByAgents, determinism, and script/package.json presence.
+
+### M4-Community — README gallery, disclaimer, community files, Open VSX
+
+- **README screenshot gallery** — full table in `README.md` showing dark + light
+  themes across the top of dashboard, Agents tab, Findings tab, and Timeline tab.
+  Images served from `media/screenshots/` (committed PNGs regenerated headlessly).
+- **Unofficial disclaimer** — prominent blockquote at the top of `README.md` and
+  the `package.json` description field: "Unofficial, community-built tool. Not
+  affiliated with or endorsed by Anthropic."
+- **Community scaffolding files**: `CONTRIBUTING.md` (dev setup, test + coverage
+  commands, PR expectations); `SECURITY.md` (what the extension reads — local CC
+  transcripts — and writes — nothing; private vulnerability reporting); `CODE_OF_CONDUCT.md`
+  (Contributor Covenant 2.1); `.github/ISSUE_TEMPLATE/` (bug report + feature request
+  + config.yml blank-issue disable); `.github/PULL_REQUEST_TEMPLATE.md` (PR checklist).
+- **Open VSX CI step** — `release.yml` includes `ovsx publish` (gated on the
+  `HAS_OVSX_PAT` env flag / `OVSX_PAT` secret). The `malte-langermann` namespace on
+  Open VSX and the `OVSX_PAT` secret require one-time manual setup (see PUBLISHING.md).
+- **`test/m4-community.test.ts`** — 65 tests asserting all community files exist,
+  cover required topics, link to the correct repo, and are internally consistent.
+- **`test/m4-readme.test.ts`** — 25 tests asserting the README gallery references,
+  unofficial disclaimer wording, and feature list are present and consistent.
+
+## [0.8.0] — 2026-06-28
 
 ### M2-Layout — Tabbed information architecture
 

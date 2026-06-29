@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/gagarinlg/claude-code-workflow-dashboard/blob/master/SECURITY.md
+    about: "Please do NOT open a public issue for security vulnerabilities. See SECURITY.md for the private reporting process."
+  - name: Claude Code CLI issues
+    url: https://github.com/anthropics/claude-code
+    about: "Issues with the Claude Code CLI itself belong upstream, not here."

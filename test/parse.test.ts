@@ -185,12 +185,15 @@ describe('classify', () => {
     expect(result.label).toBe('planner');
   });
 
-  it('matches via substring fallback when regex is invalid but string contains the pattern', () => {
-    // Craft a text that literally contains the invalid regex string as a substring
+  it('skips rule entirely when regex is invalid — does NOT fall back to substring match', () => {
+    // An invalid regex (unclosed group) passes through the length+structural guards
+    // but fails to compile. Previously fell back to literal string match, which silently
+    // gave wrong results for patterns users intended as regex. Now the rule is skipped.
     const badRules = [{ re: '(unclosed', label: 'FallbackMatch', key: 'fbmatch' }];
     const result = classify('This text (unclosed bracket here', badRules);
-    expect(result.label).toBe('FallbackMatch');
-    expect(result.key).toBe('fbmatch');
+    // Rule is skipped — deriveLabel() takes over and extracts 'this_text' from the text
+    expect(result.label).not.toBe('FallbackMatch');
+    expect(result.key).not.toBe('fbmatch');
   });
 
   it('uses key from rule when provided', () => {

@@ -7,6 +7,14 @@ name: Release
 #   VSCE_PAT  - Azure DevOps Personal Access Token for the VS Code Marketplace
 #               publisher "malte-langermann" (Marketplace > Manage > Publish scope).
 #   OVSX_PAT  - (optional) Open VSX access token; skip the ovsx step if unset.
+#               Manual one-time setup required before the ovsx step will succeed:
+#               1. Create the namespace at https://open-vsx.org/user-settings/namespaces
+#                  using the same publisher id ("malte-langermann").
+#               2. Generate an access token at https://open-vsx.org/user-settings/tokens
+#                  and store it as a repository secret named OVSX_PAT
+#                  (Settings → Secrets and variables → Actions → New repository secret).
+#               These steps are manual; do NOT attempt them from CI or automation.
+#               See also PUBLISHING.md (local-only, gitignored) for the full runbook.
 
 on:
   push:

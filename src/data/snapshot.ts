@@ -24,6 +24,13 @@ export interface Cfg {
 // Must stay in sync with the changedMaxMin default in html.ts (CHANGED_MAX_SECS / 60 = 15).
 export const CHANGED_MAX_SECS = 900;
 
+// Maximum elapsed seconds for a dead-with-no-result agent to be flagged as superseded.
+// An agent whose transcript lifespan is shorter than this threshold AND is shadowed by
+// a later same-key survivor is considered a zombie/retry rather than a genuine parallel
+// worker. 120 s (2 min) is conservative: real implementer runs take several minutes;
+// a crash-retry typically dies within seconds.
+export const SUPERSEDED_MAX_ELAPSED_SECS = 120;
+
 // Maximum number of agent transcript files processed per refresh.
 // Exported so html.ts can display the exact cap value in the user-visible warning.
 export const MAX_AGENTS = 200;
@@ -62,7 +69,10 @@ export interface LoopStats {
   phase: string;
   live: number;
   done: number;
+  /** Dead agents that are NOT superseded (genuine failures/timeouts). */
   dead: number;
+  /** Zombie/retry agents: dead + no result + short-elapsed + shadowed by a later same-key survivor. */
+  superseded: number;
   total: number;
   outTok: number;
   tools: number;
@@ -120,6 +130,9 @@ export interface Agent {
    *  prevent large findings-embedded prompts from bloating the snapshot payload.
    *  Absent when the transcript has no user event. */
   prompt?: string;
+  /** True when this agent is a detected zombie/retry: dead, no result, short-elapsed,
+   *  and shadowed by a later same-key survivor. Absent (undefined) when not superseded. */
+  superseded?: boolean;
 }
 
 export type SnapshotOk = {
@@ -367,6 +380,37 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
   agents.sort((x, y) => x.start - y.start);
   agents.forEach((a, i) => { a.idx = i + 1; });
 
+  // --- Superseded detection ---
+  // Flag dead agents that are zombie/retry crashes: they have no result, their
+  // elapsed lifespan is shorter than SUPERSEDED_MAX_ELAPSED_SECS, and a later
+  // agent with the same key exists (either done, run, or a later-starting dead).
+  // Conservative by design: 'done' agents are never flagged; the no-result guard
+  // prevents mis-flagging genuine parallel cohorts that happen to die.
+  // Build a per-key map of agent starts for quick "later survivor" lookup.
+  // A survivor B of key K must satisfy B.start > A.start AND B.id !== A.id.
+  // We accept any status for B (done/run/dead) — a later-starting dead agent is
+  // still a retry attempt, and it may itself be superseded in a later pass.
+  const laterByKey = new Map<string, number>(); // key → max start among all agents with that key
+  for (const a of agents) {
+    const cur = laterByKey.get(a.key) ?? -Infinity;
+    if (a.start > cur) laterByKey.set(a.key, a.start);
+  }
+
+  for (const a of agents) {
+    if (a.status !== 'dead') continue;
+    // No result: agent must have no findings, no result, no resultText.
+    const hasResult = a.findings !== undefined || a.result !== undefined || a.resultText !== undefined;
+    if (hasResult) continue;
+    // Short-elapsed: elapsed time from start to mtime must be under threshold.
+    const elapsed = a.mtime - a.start;
+    if (elapsed >= SUPERSEDED_MAX_ELAPSED_SECS) continue;
+    // Later same-key survivor: another agent with the same key started after A.
+    const latestStart = laterByKey.get(a.key) ?? -Infinity;
+    if (latestStart <= a.start) continue;
+    // All conditions met — this agent is superseded.
+    a.superseded = true;
+  }
+
   // O(1) lookup map — avoids O(J×A) agents.find() inside the journal result loop.
   const agentById = new Map(agents.map((a) => [a.id, a]));
 
@@ -433,11 +477,14 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
   const loopCacheRead = agents.some((a) => a.cacheRead !== undefined)
     ? agents.reduce((s, a) => s + (a.cacheRead ?? 0), 0)
     : undefined;
+  const supersededCount = agents.filter((a) => a.superseded).length;
   const loopStats: LoopStats = {
     phase,
     live: live.length,
     done: agents.filter((a) => a.status === 'done').length,
-    dead: agents.filter((a) => a.status === 'dead').length,
+    // dead excludes superseded agents — superseded is a sub-classification of dead
+    dead: agents.filter((a) => a.status === 'dead' && !a.superseded).length,
+    superseded: supersededCount,
     total: agents.length,
     outTok: agents.reduce((s, a) => s + a.tokens, 0),
     tools: agents.reduce((s, a) => s + a.tools, 0),

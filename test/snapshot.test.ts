@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { buildSnapshot, MAX_PROMPT_CHARS } from '../src/data/snapshot';
+import { buildSnapshot, MAX_PROMPT_CHARS, SUPERSEDED_MAX_ELAPSED_SECS } from '../src/data/snapshot';
 import { DEFAULT_ROLE_RULES, STALE_SECS } from '../src/data/parse';
 import type { Cfg, SnapshotOk } from '../src/data/snapshot';
 
@@ -832,5 +832,250 @@ describe('buildSnapshot — changedByAgents union/dedupe', () => {
     // filesChanged from the agent result must be accumulated in changedByAgents.
     expect(result.changedByAgents).toContain('src/foo.ts');
     expect(result.changedByAgents).toContain('src/bar.ts');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M3-Superseded: zombie/retry agent detection
+// ---------------------------------------------------------------------------
+describe('buildSnapshot — M3-Superseded: zombie/retry detection', () => {
+  let tmpBase: string;
+  let wfDir: string;
+
+  const TRANSCRIPT = (role: string) =>
+    `{"type":"user","message":{"content":"You are the ${role} agent"}}\n`;
+  const META = (agentType: string) => JSON.stringify({ agentType }) + '\n';
+
+  const makeCfg = (base: string): Cfg => ({
+    base,
+    repo: '',
+    refreshMs: 4000,
+    statusBar: true,
+    roleRules: DEFAULT_ROLE_RULES,
+  });
+
+  beforeEach(() => {
+    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'snap-superseded-'));
+    wfDir = path.join(tmpBase, 'workflows', 'wf_superseded_test');
+    fs.mkdirSync(wfDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(tmpBase, { recursive: true, force: true }); } catch {}
+  });
+
+  it('SUPERSEDED_MAX_ELAPSED_SECS is exported and equals 120', () => {
+    expect(SUPERSEDED_MAX_ELAPSED_SECS).toBe(120);
+  });
+
+  it('dead+no-result+short-elapsed agent shadowed by later same-key done agent is flagged superseded', () => {
+    // zombie: dead, no result in journal, elapsed well under 120 s.
+    // survivor: done, same key (implementer), started later.
+    // Journal: only survivor (imp2) has a result — zombie (imp1) has none.
+    const journal = [
+      '{"type":"started","agentId":"imp1"}',
+      '{"type":"started","agentId":"imp2"}',
+      '{"type":"result","agentId":"imp2","result":{"filesChanged":["src/foo.ts"],"summary":"done"}}',
+    ].join('\n') + '\n';
+
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+
+    // Both agents share agentType (same key: 'implementer').
+    fs.writeFileSync(path.join(wfDir, 'agent-imp1.jsonl'), TRANSCRIPT('implementer round 1'));
+    fs.writeFileSync(path.join(wfDir, 'agent-imp2.jsonl'), TRANSCRIPT('implementer round 2'));
+    fs.writeFileSync(path.join(wfDir, 'agent-imp1.meta.json'), META('workflow-plugins:implementer'));
+    fs.writeFileSync(path.join(wfDir, 'agent-imp2.meta.json'), META('workflow-plugins:implementer'));
+
+    // Backdate imp1 so it's dead and has a short elapsed window (mtime - start < 120s).
+    // start = mtime of meta.json; elapsed = transcript mtime - start.
+    // We write imp1's transcript first, then set its mtime to now-STALE_SECS-1 (dead).
+    // We also set its meta.json mtime to slightly before the transcript mtime so
+    // elapsed = transcriptMtime - metaMtime = a few seconds < 120.
+    const zombieTranscriptMtime = new Date(Date.now() - (STALE_SECS + 10) * 1000);
+    // start (meta mtime) is zombieTranscriptMtime - 5s → elapsed = 5s < 120
+    const zombieMetaMtime = new Date(zombieTranscriptMtime.getTime() - 5_000);
+    fs.utimesSync(path.join(wfDir, 'agent-imp1.jsonl'), zombieTranscriptMtime, zombieTranscriptMtime);
+    fs.utimesSync(path.join(wfDir, 'agent-imp1.meta.json'), zombieMetaMtime, zombieMetaMtime);
+
+    // imp2 (survivor): recently written — will be 'done' via journal result record.
+    // Its mtime is recent (default = now); the journal marks it done.
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const imp1 = result.agents.find((a) => a.id === 'imp1');
+    const imp2 = result.agents.find((a) => a.id === 'imp2');
+
+    // imp1 must be present, dead, no result, and flagged superseded.
+    expect(imp1).toBeDefined();
+    expect(imp1!.status).toBe('dead');
+    expect(imp1!.findings).toBeUndefined();
+    expect(imp1!.result).toBeUndefined();
+    expect(imp1!.resultText).toBeUndefined();
+    expect(imp1!.superseded).toBe(true);
+
+    // imp2 must be present, done, and NOT superseded.
+    expect(imp2).toBeDefined();
+    expect(imp2!.status).toBe('done');
+    expect(imp2!.superseded).toBeUndefined();
+
+    // loopStats: superseded=1, dead excludes imp1.
+    expect(result.loop.superseded).toBe(1);
+    expect(result.loop.dead).toBe(0);
+  });
+
+  it('done agent with a later same-key agent is NOT flagged superseded (done is never superseded)', () => {
+    // done1 finished with a result; done2 is a later run of the same role.
+    // done1 must not be flagged even though done2 started later.
+    const journal = [
+      '{"type":"started","agentId":"done1"}',
+      '{"type":"started","agentId":"done2"}',
+      '{"type":"result","agentId":"done1","result":{"filesChanged":["a.ts"],"summary":"pass 1"}}',
+      '{"type":"result","agentId":"done2","result":{"filesChanged":["b.ts"],"summary":"pass 2"}}',
+    ].join('\n') + '\n';
+
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-done1.jsonl'), TRANSCRIPT('implementer pass 1'));
+    fs.writeFileSync(path.join(wfDir, 'agent-done2.jsonl'), TRANSCRIPT('implementer pass 2'));
+    fs.writeFileSync(path.join(wfDir, 'agent-done1.meta.json'), META('workflow-plugins:implementer'));
+    fs.writeFileSync(path.join(wfDir, 'agent-done2.meta.json'), META('workflow-plugins:implementer'));
+
+    // Make done1 appear older (but still done via journal).
+    const olderTime = new Date(Date.now() - 600_000); // 10 min ago
+    fs.utimesSync(path.join(wfDir, 'agent-done1.jsonl'), olderTime, olderTime);
+    fs.utimesSync(path.join(wfDir, 'agent-done1.meta.json'), olderTime, olderTime);
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const d1 = result.agents.find((a) => a.id === 'done1');
+    const d2 = result.agents.find((a) => a.id === 'done2');
+
+    expect(d1).toBeDefined();
+    expect(d1!.status).toBe('done');
+    expect(d1!.superseded).toBeUndefined(); // never flag done agents
+
+    expect(d2).toBeDefined();
+    expect(d2!.superseded).toBeUndefined();
+
+    expect(result.loop.superseded).toBe(0);
+  });
+
+  it('dead agent with a result is NOT flagged superseded (no-result guard)', () => {
+    // A dead agent that has a result in the journal (finished but stale after crash)
+    // must not be flagged, even if elapsed < 120s and a later same-key agent exists.
+    const journal = [
+      '{"type":"started","agentId":"cr1"}',
+      '{"type":"started","agentId":"cr2"}',
+      '{"type":"result","agentId":"cr1","result":{"findings":[{"severity":"HIGH","title":"Bug"}],"verdict":"found"}}',
+      '{"type":"result","agentId":"cr2","result":{"findings":[],"verdict":"clean"}}',
+    ].join('\n') + '\n';
+
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-cr1.jsonl'), TRANSCRIPT('code reviewer pass 1'));
+    fs.writeFileSync(path.join(wfDir, 'agent-cr2.jsonl'), TRANSCRIPT('code reviewer pass 2'));
+    fs.writeFileSync(path.join(wfDir, 'agent-cr1.meta.json'), META('workflow-plugins:code-reviewer'));
+    fs.writeFileSync(path.join(wfDir, 'agent-cr2.meta.json'), META('workflow-plugins:code-reviewer'));
+
+    // Backdate cr1 so it's dead and has short elapsed — but it HAS a result.
+    const staleTime = new Date(Date.now() - (STALE_SECS + 30) * 1000);
+    const staleMetaTime = new Date(staleTime.getTime() - 5_000);
+    fs.utimesSync(path.join(wfDir, 'agent-cr1.jsonl'), staleTime, staleTime);
+    fs.utimesSync(path.join(wfDir, 'agent-cr1.meta.json'), staleMetaTime, staleMetaTime);
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const cr1 = result.agents.find((a) => a.id === 'cr1');
+    expect(cr1).toBeDefined();
+    // cr1 is done (has result in journal) — so status is 'done', not 'dead'
+    // even if transcript is stale (doneIds wins over staleness check).
+    // Regardless, it must not be flagged superseded.
+    expect(cr1!.superseded).toBeUndefined();
+    expect(result.loop.superseded).toBe(0);
+  });
+
+  it('dead agent with elapsed >= SUPERSEDED_MAX_ELAPSED_SECS is NOT flagged (elapsed guard)', () => {
+    // A dead+no-result agent that ran for longer than the threshold is a genuine failure,
+    // not a zombie. It must not be flagged even if a later same-key agent exists.
+    const journal = [
+      '{"type":"started","agentId":"slow1"}',
+      '{"type":"started","agentId":"slow2"}',
+      '{"type":"result","agentId":"slow2","result":{"filesChanged":["z.ts"],"summary":"ok"}}',
+    ].join('\n') + '\n';
+
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-slow1.jsonl'), TRANSCRIPT('implementer long run'));
+    fs.writeFileSync(path.join(wfDir, 'agent-slow2.jsonl'), TRANSCRIPT('implementer retry'));
+    fs.writeFileSync(path.join(wfDir, 'agent-slow1.meta.json'), META('workflow-plugins:implementer'));
+    fs.writeFileSync(path.join(wfDir, 'agent-slow2.meta.json'), META('workflow-plugins:implementer'));
+
+    // slow1: dead, no result, but elapsed = 200s > 120 = SUPERSEDED_MAX_ELAPSED_SECS.
+    // transcript mtime: now - STALE_SECS - 10 (dead)
+    // meta mtime: transcript mtime - 200s → elapsed = 200s ≥ threshold
+    const slowTranscriptMtime = new Date(Date.now() - (STALE_SECS + 10) * 1000);
+    const slowMetaMtime = new Date(slowTranscriptMtime.getTime() - (SUPERSEDED_MAX_ELAPSED_SECS + 80) * 1000);
+    fs.utimesSync(path.join(wfDir, 'agent-slow1.jsonl'), slowTranscriptMtime, slowTranscriptMtime);
+    fs.utimesSync(path.join(wfDir, 'agent-slow1.meta.json'), slowMetaMtime, slowMetaMtime);
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const slow1 = result.agents.find((a) => a.id === 'slow1');
+    expect(slow1).toBeDefined();
+    expect(slow1!.status).toBe('dead');
+    expect(slow1!.superseded).toBeUndefined(); // elapsed too long — not a zombie
+
+    expect(result.loop.superseded).toBe(0);
+    // dead count includes slow1 (genuine failure)
+    expect(result.loop.dead).toBeGreaterThanOrEqual(1);
+  });
+
+  it('dead+no-result agent with NO later same-key agent is NOT flagged (no survivor guard)', () => {
+    // A single dead+no-result agent with no later same-key agent is a genuine failure.
+    const journal = [
+      '{"type":"started","agentId":"lone1"}',
+    ].join('\n') + '\n';
+
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-lone1.jsonl'), TRANSCRIPT('implementer alone'));
+    fs.writeFileSync(path.join(wfDir, 'agent-lone1.meta.json'), META('workflow-plugins:implementer'));
+
+    const staleTime = new Date(Date.now() - (STALE_SECS + 10) * 1000);
+    const staleMetaTime = new Date(staleTime.getTime() - 5_000);
+    fs.utimesSync(path.join(wfDir, 'agent-lone1.jsonl'), staleTime, staleTime);
+    fs.utimesSync(path.join(wfDir, 'agent-lone1.meta.json'), staleMetaTime, staleMetaTime);
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const lone1 = result.agents.find((a) => a.id === 'lone1');
+    expect(lone1).toBeDefined();
+    expect(lone1!.status).toBe('dead');
+    expect(lone1!.superseded).toBeUndefined();
+
+    expect(result.loop.superseded).toBe(0);
+    expect(result.loop.dead).toBe(1);
+  });
+
+  it('loopStats.superseded is always present as a number (zero when none flagged)', () => {
+    // Minimal run — no agents superseded; superseded must still be 0 not undefined.
+    const journal = '{"type":"started","agentId":"a1"}\n' +
+      '{"type":"result","agentId":"a1","result":{"filesChanged":[],"summary":"ok"}}\n';
+
+    fs.writeFileSync(path.join(wfDir, 'journal.jsonl'), journal);
+    fs.writeFileSync(path.join(wfDir, 'agent-a1.jsonl'), TRANSCRIPT('implementer'));
+    fs.writeFileSync(path.join(wfDir, 'agent-a1.meta.json'), META('workflow-plugins:implementer'));
+
+    const result = buildSnapshot(makeCfg(tmpBase));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(typeof result.loop.superseded).toBe('number');
+    expect(result.loop.superseded).toBe(0);
   });
 });

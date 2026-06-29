@@ -99,7 +99,7 @@ jobs:
             exit 1
           fi
           STAMP="$(echo "$NIGHTLY" | cut -d. -f3)"
-          if [ "$STAMP" -lt 2025000000 ]; then
+          if [ "$STAMP" -lt 2026000000 ]; then
             echo "::error::Nightly stamp $STAMP is implausibly old — possible clock anomaly on runner"
             exit 1
           fi

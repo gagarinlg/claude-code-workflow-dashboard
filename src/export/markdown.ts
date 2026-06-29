@@ -162,7 +162,7 @@ function escBody(v: unknown): string {
     // The second replace escapes any remaining lone asterisk that is not surrounded by
     // word characters (e.g. '** text' → '* text' → escaped to avoid dangling italic opener).
     .replace(/\*{2,}/g, '*')
-    .replace(/(?<=\s|^)\*(?=\s|$)/gm, '')
+    .replace(/(^|\s)\*(\s|$)/gm, '$1$2')
     .replace(/(^|\s)\*(\s)/gm, '$1\\*$2');
   return defangLinks(processed).replace(/```/g, '\\`\\`\\`');
 }
@@ -239,6 +239,9 @@ function buildLoopSummary(snap: SnapshotOk): string {
   lines.push(`| Live | ${L.live} |`);
   lines.push(`| Done | ${L.done} |`);
   lines.push(`| Stalled | ${L.dead} |`);
+  // Superseded: only shown when > 0 to keep the table uncluttered for typical runs.
+  // Mirrors the conditional rendering in overview() in js-panels.ts.
+  if (L.superseded) lines.push(`| Superseded | ${L.superseded} |`);
   lines.push(`| Review passes | ${L.passes} |`);
   lines.push(`| Total findings | ${L.findings} |`);
   lines.push(`| Output tokens | ${fmtTok(L.outTok)} |`);
@@ -418,7 +421,7 @@ function buildAgentMetrics(snap: SnapshotOk): string {
     const cells: string[] = [
       s(a.idx ?? ''),
       escCell(a.label),
-      a.status === 'dead' ? 'stalled' : a.status === 'run' ? 'live' : s(a.status),
+      a.superseded ? 'superseded' : a.status === 'dead' ? 'stalled' : a.status === 'run' ? 'live' : s(a.status),
       fmtElapsed(a.elapsed),
       fmtTok(a.tokens ?? 0),
       String(a.tools ?? 0),

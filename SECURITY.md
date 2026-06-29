@@ -8,6 +8,21 @@
 | Pre-release / nightly | Best-effort |
 | Older versions | No |
 
+## Data access — what the extension reads and writes
+
+This extension is **strictly read-only**:
+
+- **Reads:** agent transcript files (`.jsonl`) and run journal files stored by the
+  Claude Code CLI under `~/.claude/projects/…/workflows/wf_*/`. It also reads
+  recently-modified files in the configured workspace directory (for the **Changed**
+  tab). No data is read from the network.
+- **Writes:** nothing. The extension never writes to `~/.claude`, to the workspace,
+  or to any other path. The only user-initiated write is the **Export Markdown**
+  command, which opens a native Save dialog so the user chooses the destination
+  explicitly.
+- **Network:** none. The extension makes no outbound network requests.
+- **Telemetry:** none.
+
 ## Reporting a Vulnerability
 
 This is a community VS Code extension published to the Marketplace and Open VSX.

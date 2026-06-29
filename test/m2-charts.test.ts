@@ -41,7 +41,8 @@ function buildChartsHarness(js: string): (snap: object) => string {
   // the panel() extraction (TODO(M3)-tracked dead code).
   const factory = new Function(
     'snap',
-    `${escFn}\n${escClsFn}\n${safeNFn}\n${fmtTokFn}\n${barFn}\n${trendFn}\n${chartsPanelFn}\nreturn chartsPanel();`,
+    // TL_LABEL_TRUNC is used by tokenBarChart() for agent label truncation (shared constant).
+    `var TL_LABEL_TRUNC=16;\n${escFn}\n${escClsFn}\n${safeNFn}\n${fmtTokFn}\n${barFn}\n${trendFn}\n${chartsPanelFn}\nreturn chartsPanel();`,
   ) as (snap: object) => string;
 
   return (snap: object) => factory(snap);
@@ -402,14 +403,14 @@ describe('M2-Charts — bar label slice order: no partial HTML entity', () => {
   const chartsHarness = buildChartsHarness(js);
 
   it('label containing & is never rendered as a dangling & after truncation', () => {
-    // An agent label exactly 14 chars where the 14th char is part of an entity
-    // like &amp; — if esc() runs BEFORE slice(), &amp; at position 11-14 would
-    // be sliced to &amp producing a dangling &.  Slice-THEN-esc must prevent this.
-    // We use a 14-char label ending in & so esc() would produce &amp; (5 chars).
+    // An agent label at the TL_LABEL_TRUNC cap (16 chars) where the last char is &.
+    // If esc() runs BEFORE slice(), &amp; at the end would be sliced to &amp producing
+    // a dangling &. Slice-THEN-esc must prevent this.
+    // We use a 16-char label ending in & so esc() would produce &amp; (5 chars).
     // After correct slice-then-esc the output must not contain a bare '&amp' fragment.
     const agents = [{
       id: 'a1',
-      label: 'Label ending &',   // length = 14, last char is '&'
+      label: 'Label ending  &&',  // length = 16, last char is '&'
       key: 'agent',
       status: 'done',
       elapsed: 60,
@@ -423,8 +424,8 @@ describe('M2-Charts — bar label slice order: no partial HTML entity', () => {
     }];
     const snap = makeSnap(agents);
     const out = chartsHarness(snap);
-    // After correct slice(0,14) → esc() the & at the end becomes &amp; fully
-    // (it appears as-is in the 14-char window, then esc encodes it as a complete entity).
+    // After correct slice(0,TL_LABEL_TRUNC) → esc() the & at the end becomes &amp; fully
+    // (it appears as-is in the 16-char window, then esc encodes it as a complete entity).
     // The truncated label must NOT contain a raw bare '&' that is not immediately
     // followed by a valid entity suffix — i.e. no dangling & without amp;/lt;/gt;/quot;.
     // The simplest check: the output must not contain the fragment '&amp' without a
@@ -438,7 +439,7 @@ describe('M2-Charts — bar label slice order: no partial HTML entity', () => {
     // produce &lt or &lt; (depending on where the cut falls).
     const agents = [{
       id: 'a1',
-      label: 'Label ending  <',  // exactly 15 chars; slice(0,14) cuts before the <
+      label: 'Label ending  <',  // exactly 15 chars; fits within TL_LABEL_TRUNC=16; < is escaped
       key: 'agent',
       status: 'done',
       elapsed: 60,

@@ -74,7 +74,15 @@ function wire(){
     function toggle_prompt(){var id=pd.dataset.paid;if(!id)return;state.openPrompt[id]=!state.openPrompt[id];save();pd.classList.toggle('open');var nowOpen=pd.classList.contains('open');hdr.setAttribute('aria-expanded',nowOpen?'true':'false');
     // Keep aria-label in sync with aria-expanded so AT announces the current action
     // ("Collapse prompt for X" when open, "Expand prompt for X" when closed).
-    var card=pd.closest('[data-aid]');var agentLbl=card&&card.querySelector('.role')?card.querySelector('.role').textContent:'';hdr.setAttribute('aria-label',(nowOpen?'Collapse':'Expand')+' prompt for '+agentLbl);}
+    var card=pd.closest('[data-aid]');var rawLbl=card&&card.querySelector('.role')?(card.querySelector('.role').textContent||''):'';
+    // Strip control characters (U+0000 through U+001F, which includes CR and LF) from the
+    // transcript-derived label before embedding in aria-label. Some screen readers
+    // (NVDA+Chrome, JAWS) handle embedded newlines in aria-label unpredictably, announcing
+    // them as 'blank' or splitting the label mid-announcement.
+    // NOTE: this lives inside a template literal, so the char-class escapes are double-backslashed
+    // (\\x00 -> \x00 in the emitted webview JS). A single backslash here would collapse to a real
+    // control char and break the script (the bug this comment replaces).
+    var agentLbl=rawLbl.replace(/[\\x00-\\x1f]/g,' ');hdr.setAttribute('aria-label',(nowOpen?'Collapse':'Expand')+' prompt for '+agentLbl);}
     hdr.addEventListener('click',toggle_prompt);
     hdr.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle_prompt();}});
   });
@@ -88,11 +96,6 @@ function wire(){
       if(agent&&agent.prompt)api.postMessage({type:'copyText',text:agent.prompt});
     });
   });
-  // Panel section collapse toggle — targets '.panel>h3>button[data-pkey]' directly.
-  // v3 BINDING: no tab panel currently calls panel(), so this forEach finds no elements.
-  // TODO(M3): remove this block alongside panel() in js-panels.ts if no callers are added by M3.
-  // Kept so the wire() + state.panelOpen machinery remains available for future callers.
-  document.querySelectorAll('.panel>h3>button[data-pkey]').forEach(function(btn){var h3=btn.parentElement;if(!h3)return;var panelEl=h3.parentElement;if(!panelEl)return;function toggle_panel(){var k=btn.dataset.pkey;if(!k)return;var nowCollapsed=panelEl.classList.toggle('collapsed');var isOpen=!nowCollapsed;state.panelOpen[k]=isOpen?1:0;save();btn.setAttribute('aria-expanded',isOpen?'true':'false');}btn.addEventListener('click',toggle_panel);btn.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle_panel();}});});
   // Raw-JSON <details> toggle — persists open/closed state per result key via state.openRaw.
   // Key is the data-rlabel of the closest [data-rlabel] ancestor (r.label+':'+r.pass).
   // First, restore persisted open state on each .raw-json-details inside a [data-rlabel] card.
@@ -118,6 +121,165 @@ function wire(){
     if(state.openRaw[k])det.open=true;
     det.addEventListener('toggle',function(){state.openRaw[k]=det.open?1:0;save();});
   });
+  // ---------------------------------------------------------------------------
+  // M3-Timeline wiring: zoom buttons, bar click/keyboard, hover tooltip, scroll.
+  // ---------------------------------------------------------------------------
+  // Zoom buttons: clamp to 0.5–4, persist, re-render.
+  var tlZoomIn=document.getElementById('tlZoomIn');
+  var tlZoomOut=document.getElementById('tlZoomOut');
+  if(tlZoomIn){tlZoomIn.addEventListener('click',function(){
+    state.tlZoom=Math.min(4,Math.round((state.tlZoom+0.25)*100)/100);
+    save();render();
+  });}
+  if(tlZoomOut){tlZoomOut.addEventListener('click',function(){
+    state.tlZoom=Math.max(0.5,Math.round((state.tlZoom-0.25)*100)/100);
+    save();render();
+  });}
+
+  // Segmented control [Gantt | Graph] — each button sets state.timelineView directly.
+  // aria-pressed and tl-view-toggle-active are updated by timelinePanel() on next render.
+  // tlViewGantt: the Gantt segment button (no tl-view-toggle-active in gantt view).
+  var tlViewGantt=document.getElementById('tlViewGantt');
+  if(tlViewGantt){tlViewGantt.addEventListener('click',function(){
+    state.timelineView='gantt';
+    save();render();
+  });}
+  // tlViewToggle: the Graph/DAG segment button (id backward-compatible with wire tests).
+  // Segmented control: clicking Graph always sets view to 'dag' (no toggle — use Gantt button to go back).
+  var tlViewToggle=document.getElementById('tlViewToggle');
+  if(tlViewToggle){tlViewToggle.addEventListener('click',function(){
+    state.timelineView='dag';
+    save();render();
+  });}
+  // WAI-ARIA radiogroup keyboard pattern (APG): ArrowRight/ArrowDown move to the next option;
+  // ArrowLeft/ArrowUp move to the previous option. Both buttons are present when the timeline
+  // tab is active; only the segmented control's radiogroup needs this wiring (the tab bar
+  // already implements its own arrow navigation via wireTabBar()).
+  if(tlViewGantt){tlViewGantt.addEventListener('keydown',function(e){
+    if(e.key==='ArrowRight'||e.key==='ArrowDown'){e.preventDefault();if(tlViewToggle){tlViewToggle.click();tlViewToggle.focus();}}
+  });}
+  if(tlViewToggle){tlViewToggle.addEventListener('keydown',function(e){
+    if(e.key==='ArrowLeft'||e.key==='ArrowUp'){e.preventDefault();if(tlViewGantt){tlViewGantt.click();tlViewGantt.focus();}}
+  });}
+
+  // Bar click/Enter → switch to Agents tab, expand that agent's card.
+  // Also handles ArrowRight/ArrowLeft/Home/End keyboard nav within bars.
+  var tlBars=Array.from(document.querySelectorAll('.tl-bar-group'));
+  function tlActivateBar(g){
+    var aid=g.dataset.tlaid;
+    if(!aid)return;
+    // Expand the agent card in Agents tab.
+    state.openAgents[aid]=true;
+    state.activeTab='agents';
+    save();
+    render();
+    // After render, scroll the card into view.
+    var card=document.querySelector('[data-aid="'+CSS.escape(aid)+'"]');
+    if(card)card.scrollIntoView({block:'nearest'});
+  }
+  tlBars.forEach(function(g){
+    g.addEventListener('click',function(){tlActivateBar(g);});
+    g.addEventListener('keydown',function(e){
+      var idx=tlBars.indexOf(g);
+      if(e.key==='Enter'||e.key===' '){e.preventDefault();tlActivateBar(g);}
+      else if(e.key==='ArrowRight'){e.preventDefault();var next=tlBars[idx+1];if(next)next.focus();}
+      else if(e.key==='ArrowLeft'){e.preventDefault();var prev=tlBars[idx-1];if(prev)prev.focus();}
+      else if(e.key==='Home'){e.preventDefault();if(tlBars[0])tlBars[0].focus();}
+      else if(e.key==='End'){e.preventDefault();var last=tlBars[tlBars.length-1];if(last)last.focus();}
+    });
+  });
+
+  // DAG node group wiring — click/Enter/Space navigates to the agent card (same as Gantt bars).
+  // Nodes have role=button and tabindex=0 (rendered by dagPanel()), so keyboard activation
+  // requires explicit event listeners here per WCAG 4.1.2 (Name/Role/Value).
+  var tlDagNodes=Array.from(document.querySelectorAll('.tl-dag-node-group'));
+  tlDagNodes.forEach(function(g){
+    g.addEventListener('click',function(){tlActivateBar(g);});
+    g.addEventListener('keydown',function(e){
+      var idx=tlDagNodes.indexOf(g);
+      if(e.key==='Enter'||e.key===' '){e.preventDefault();tlActivateBar(g);}
+      else if(e.key==='ArrowRight'){e.preventDefault();var next=tlDagNodes[idx+1];if(next)next.focus();}
+      else if(e.key==='ArrowLeft'){e.preventDefault();var prev=tlDagNodes[idx-1];if(prev)prev.focus();}
+      else if(e.key==='Home'){e.preventDefault();if(tlDagNodes[0])tlDagNodes[0].focus();}
+      else if(e.key==='End'){e.preventDefault();var last=tlDagNodes[tlDagNodes.length-1];if(last)last.focus();}
+    });
+  });
+
+  // Hover tooltip: show on mouseenter, hide on mouseleave.
+  // Position via el.style.left/top on the named tooltip node — CSP allows this.
+  // The tooltip div is rendered outside any view-specific branch so it is present in the
+  // DOM in both Gantt and DAG views (see timelinePanel() in js-panels.ts).
+  var tlTooltip=document.getElementById('tl-tooltip');
+
+  // Shared helper: populate and position the tooltip for a given bar/node group element.
+  // scrollContainerId: the element whose scroll offset the bar coordinates are relative to.
+  function showTlTooltip(g,scrollContainerId){
+    if(!tlTooltip)return;
+    var aid=g.dataset.tlaid;
+    var status=g.dataset.tlstatus||'';
+    var agent=snap&&snap.agents&&snap.agents.find(function(a){return a.id===aid;});
+    if(!agent)return;
+    // Build tooltip content using textContent (injection-safe — browser does not parse HTML).
+    // Lines are newline-separated; CSS white-space:pre-line renders each on its own line.
+    var lines=[
+      agent.label||'agent',
+      'Status: '+status,
+      'Elapsed: '+fmtElapsedSR(safeN(agent.elapsed)),
+      'Tokens: '+fmtTok(safeN(agent.tokens)),
+      'Tools: '+safeN(agent.tools)
+    ];
+    tlTooltip.textContent=lines.join('\\n');
+    tlTooltip.removeAttribute('hidden');
+    // Use viewport-relative (getBoundingClientRect) coordinates with position:fixed
+    // so the tooltip is not affected by scroll offset inside .tl-scroll.
+    // The tooltip div is a sibling of .tl-scroll (not a child) so offsetParent-relative
+    // positioning would require compensating for .tl-scroll.scrollLeft — fragile and
+    // one render cycle stale. Fixed positioning bypasses that entirely.
+    var rect=g.getBoundingClientRect();
+    var tipX=rect.left+4;
+    // Clamp y: position above the bar; if that would clip to <4px from the top, go below.
+    var tipY=rect.top-42;
+    if(tipY<4)tipY=rect.bottom+4;
+    tlTooltip.style.left=tipX+'px';
+    tlTooltip.style.top=tipY+'px';
+  }
+
+  tlBars.forEach(function(g){
+    g.addEventListener('mouseenter',function(){showTlTooltip(g,'tl-scroll');});
+    g.addEventListener('mouseleave',function(){
+      if(tlTooltip)tlTooltip.setAttribute('hidden','');
+    });
+    // WCAG 1.4.13: tooltip triggered on hover must also trigger on keyboard focus.
+    g.addEventListener('focus',function(){showTlTooltip(g,'tl-scroll');});
+    // Hide on blur (keyboard users navigating away).
+    g.addEventListener('blur',function(){
+      if(tlTooltip)tlTooltip.setAttribute('hidden','');
+    });
+  });
+
+  // DAG node tooltip — mirrors Gantt bar tooltip so hover behaviour is consistent across views.
+  tlDagNodes.forEach(function(g){
+    g.addEventListener('mouseenter',function(){showTlTooltip(g,'tl-dag-scroll');});
+    g.addEventListener('mouseleave',function(){
+      if(tlTooltip)tlTooltip.setAttribute('hidden','');
+    });
+    // WCAG 1.4.13: tooltip triggered on hover must also trigger on keyboard focus.
+    g.addEventListener('focus',function(){showTlTooltip(g,'tl-dag-scroll');});
+    g.addEventListener('blur',function(){
+      if(tlTooltip)tlTooltip.setAttribute('hidden','');
+    });
+  });
+
+  // WCAG 1.4.13: Escape key dismisses any visible timeline/DAG tooltip.
+  // The listener is attached after each innerHTML re-render (wire() is called after
+  // each render); the old listener is GC'd with the old DOM scope. This is idempotent
+  // and covers both Gantt bar tooltips and DAG node tooltips from a single handler.
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape'&&tlTooltip&&!tlTooltip.hasAttribute('hidden')){
+      tlTooltip.setAttribute('hidden','');
+    }
+  });
+
   // Tab bar wiring — WAI-ARIA keyboard model for the tablist.
   wireTabBar();
 }

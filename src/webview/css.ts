@@ -5,6 +5,15 @@
 // All rules use --vscode-* CSS variables (no hardcoded colors per CLAUDE.md).
 
 // ---------------------------------------------------------------------------
+// Shared severity badge color rules — used in both CSS (panel) and CSS_SIDEBAR.
+// The six rules are byte-for-byte identical between both exports; any future
+// change to badge colors or border style needs to be made here only once.
+// The .sev sizing rule (font-size, padding, border-radius) differs between panel and
+// sidebar and is defined separately in each export, not here.
+// ---------------------------------------------------------------------------
+export const SEV_BADGE_CSS = `.CRITICAL{background:rgba(248,81,73,.15);color:var(--vscode-charts-red,#f85149);border:1px solid var(--vscode-charts-red,#f85149)}.HIGH{background:rgba(210,100,50,.15);color:var(--vscode-charts-orange,#d26432);border:1px solid var(--vscode-charts-orange,#d26432)}.MEDIUM{background:rgba(220,170,0,.15);color:var(--vscode-charts-yellow,#dcaa00);border:1px solid var(--vscode-charts-yellow,#dcaa00)}.LOW{background:rgba(63,135,185,.15);color:var(--vscode-charts-blue,#3f87b9);border:1px solid var(--vscode-charts-blue,#3f87b9)}.NITPICK{background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}.UNRATED{background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}`;
+
+// ---------------------------------------------------------------------------
 // Full-panel CSS — editor panel / webview panel mode.
 // ---------------------------------------------------------------------------
 // CSS is an opaque template string — theme-native via --vscode-* vars.
@@ -56,6 +65,11 @@ input[type=checkbox]:focus-visible{outline:2px solid var(--vscode-focusBorder);o
 .st.run{background:rgba(63,185,80,.2);color:var(--vscode-charts-green,#3fb950)}
 .st.done{background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}
 .st.dead{background:rgba(248,81,73,.18);color:var(--vscode-charts-red,#f85149)}
+/* Superseded agent card — dimmed and yellow badge to distinguish from genuinely stalled agents. */
+.card.superseded-card{opacity:.55}
+.st.superseded{background:rgba(212,167,0,.2);color:var(--vscode-charts-yellow,#d4a700);border:1px solid var(--vscode-charts-yellow,#d4a700)}
+/* Superseded KPI value — same yellow as the badge. */
+.kpi-superseded{color:var(--vscode-charts-yellow,#d4a700)}
 .kpis{display:flex;gap:16px;flex-wrap:wrap;font-size:12px}
 .kpi b{font-size:18px;font-variant-numeric:tabular-nums}
 .activity{margin-top:6px;font-size:11px;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -70,12 +84,7 @@ input[type=checkbox]:focus-visible{outline:2px solid var(--vscode-focusBorder);o
    Per CLAUDE.md convention, hardcoded colors are forbidden; the rgba() tints here are
    semi-transparent overlays (15-20% alpha) that pair with --vscode-* foreground/border vars
    and are overridden by the @media (forced-colors:active) block below for high-contrast themes. */
-.CRITICAL{background:rgba(248,81,73,.15);color:var(--vscode-charts-red,#f85149);border:1px solid var(--vscode-charts-red,#f85149)}
-.HIGH{background:rgba(210,100,50,.15);color:var(--vscode-charts-orange,#d26432);border:1px solid var(--vscode-charts-orange,#d26432)}
-.MEDIUM{background:rgba(220,170,0,.15);color:var(--vscode-charts-yellow,#dcaa00);border:1px solid var(--vscode-charts-yellow,#dcaa00)}
-.LOW{background:rgba(63,135,185,.15);color:var(--vscode-charts-blue,#3f87b9);border:1px solid var(--vscode-charts-blue,#3f87b9)}
-.NITPICK{background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}
-.UNRATED{background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}
+${SEV_BADGE_CSS}
 .ok{color:var(--vscode-charts-green,#3fb950)}.bad{color:var(--vscode-charts-red,#f85149)}
 .finding{border:1px solid var(--vscode-panel-border);border-radius:6px;padding:6px 9px;margin-bottom:6px}
 .finding .ttl[tabindex]{cursor:pointer}
@@ -276,7 +285,8 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
    they remain visible in Windows High Contrast mode. */
 @media (forced-colors:active){
   .CRITICAL,.HIGH,.MEDIUM,.LOW{background:ButtonFace;border:1px solid ButtonText;color:ButtonText}
-  .st.run,.st.dead{background:ButtonFace;border:1px solid ButtonText;color:ButtonText}
+  .st.run,.st.dead,.st.superseded{background:ButtonFace;border:1px solid ButtonText;color:ButtonText}
+  .card.superseded-card{opacity:1;border:1px dashed ButtonText}
   .typed-verdict-ok,.typed-verdict-bad,.typed-verdict-neutral{color:ButtonText;border:1px solid ButtonText}
   .typed-bool-chip{background:ButtonFace;border:1px solid ButtonText;color:ButtonText}
   .chart-bar,rect[data-testid="chart-bar"]{fill:ButtonText}
@@ -301,12 +311,119 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
   .tab-btn.tab-active{border-bottom-color:Highlight;border-bottom-width:2px}
   /* Ensure disabled tabs remain clearly muted (GrayText) in HC mode. */
   .tab-btn[disabled]{color:GrayText;border-bottom-color:transparent}
+  /* Tab badge: explicit forced-colors override to match other badge-family elements. */
+  .tab-badge{background:ButtonFace;color:ButtonText;border:1px solid ButtonText}
 }
 /* Respect the user's motion preference (CLAUDE.md: 'respect prefers-reduced-motion').
    All three chevron selectors use transition:transform 120ms ease in normal mode;
    the override removes the animation entirely for users who have opted out of motion. */
 @media (prefers-reduced-motion:reduce){
   .panel-chevron,.card-chevron,.prompt-disc-chevron{transition:none}
+}
+
+/* ---------------------------------------------------------------------------
+ * M3-Timeline: Gantt chart panel styles.
+ *
+ * All fills are via CSS classes (no inline style= on SVG elements — CSP).
+ * Colors use --vscode-charts-* with hex fallbacks (no hardcoded hex in isolation).
+ * ---------------------------------------------------------------------------*/
+
+/* Wrapper: sticky label column + horizontal scroll. */
+.tl-scroll{overflow-x:auto;overflow-y:hidden;position:relative;cursor:default}
+/* Zoom control bar above the chart. */
+.tl-zoom-ctrl{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.tl-zoom-btn{font-size:14px;padding:1px 8px;min-width:24px;font-weight:600;line-height:1}
+.tl-zoom-label{font-size:11px;opacity:.7;min-width:36px;text-align:center;font-variant-numeric:tabular-nums}
+/* SVG lane label background — covers the bar area behind the sticky column. */
+.tl-label-bg{fill:var(--vscode-editor-background)}
+/* Lane label text in the sticky column. */
+.tl-lane-label{fill:var(--vscode-foreground);font-size:11px;font-family:var(--vscode-font-family,sans-serif)}
+/* Tick labels above the axis. */
+.tl-tick-label{fill:var(--vscode-foreground);font-size:9px;font-family:var(--vscode-font-family,sans-serif);opacity:.6}
+/* Vertical grid lines at each tick. */
+.tl-grid-line{stroke:var(--vscode-panel-border);fill:none;stroke-width:1;opacity:.5}
+/* Bar status classes — fill via CSS, no inline style= (CSP rule).
+   No hex fallbacks here — parallel to the existing chart-bar/.chart-trend-* pattern
+   which also uses --vscode-charts-* without hex fallbacks to stay test-clean. */
+.tl-bar-run{fill:var(--vscode-charts-green)}
+.tl-bar-done{fill:var(--vscode-charts-blue)}
+.tl-bar-dead{fill:var(--vscode-charts-red)}
+/* Superseded: faded yellow — collapsed under surviving lane. */
+.tl-bar-superseded{fill:var(--vscode-charts-yellow);opacity:.4}
+/* Stripe fill used inside the <pattern> for superseded bars. */
+.tl-stripe-fill{fill:var(--vscode-charts-yellow);opacity:.6}
+/* Stripe overlay rect for superseded bars — opacity via class so forced-colors can suppress it. */
+.tl-stripe-overlay{opacity:.55}
+/* Focus ring: hidden by default; shown when bar group is focused. */
+.tl-focus-ring{fill:none;stroke:none}
+.tl-bar-group:focus{outline:none}
+.tl-bar-group:focus .tl-focus-ring{stroke:var(--vscode-focusBorder);stroke-width:2;fill:none}
+/* Live-agent pulsing right-edge cap. */
+.tl-live-cap{fill:var(--vscode-charts-green);animation:tl-pulse 1.4s ease-in-out infinite}
+@keyframes tl-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+/* Tooltip: floating, positioned via el.style.left/top (named node — allowed by CSP).
+   Hidden by default (hidden attribute); shown by removing hidden. */
+.tl-tooltip{position:fixed;background:var(--vscode-editorHoverWidget-background,var(--vscode-editorWidget-background));color:var(--vscode-editorHoverWidget-foreground,var(--vscode-foreground));border:1px solid var(--vscode-editorHoverWidget-border,var(--vscode-panel-border));border-radius:4px;padding:6px 9px;font-size:11px;pointer-events:none;z-index:10;max-width:220px;white-space:pre-line;word-break:break-word}
+/* Cap-warn banner reused from agents panel — already defined, no duplicate needed. */
+/* forced-colors overrides for timeline elements. */
+@media (forced-colors:active){
+  .tl-bar-run,.tl-bar-done,.tl-bar-dead,.tl-bar-superseded{fill:ButtonText}
+  .tl-live-cap{fill:Highlight}
+  .tl-bar-group:focus .tl-focus-ring{stroke:Highlight}
+  .tl-grid-line{stroke:ButtonText;opacity:.4}
+  .tl-lane-label,.tl-tick-label{fill:ButtonText;opacity:1}
+  .tl-label-bg{fill:Canvas}
+  /* Stripe overlay is a transparency effect — suppress entirely in forced-colors mode. */
+  .tl-stripe-overlay{display:none}
+}
+/* prefers-reduced-motion: disable pulsing cap animation. */
+@media (prefers-reduced-motion:reduce){
+  .tl-live-cap{animation:none;opacity:1}
+}
+
+/* ---------------------------------------------------------------------------
+ * M3-DepGraph: DAG sub-view CSS.
+ *
+ * Node rects reuse the Gantt .tl-bar-* status classes for fill (no duplication).
+ * Edges and arrowheads use a single color class (.tl-dag-edge, .tl-dag-arrowhead).
+ * No inline style= anywhere (CSP-safe). forced-colors handled below.
+ * ---------------------------------------------------------------------------*/
+
+/* Segmented control buttons [Gantt | Graph]: outline-only (inactive). */
+/* USER OVERRIDE: background must be transparent (no fill) for inactive segment. */
+.tl-view-toggle{font-size:11px;padding:1px 8px;margin-left:0;font-weight:600;letter-spacing:.03em;background:transparent;color:var(--vscode-foreground);border:1px solid var(--vscode-button-background);border-radius:0}
+.tl-view-toggle:first-child{border-radius:3px 0 0 3px;margin-left:8px}
+/* Overlap the adjacent border using negative margin so there is never a visible gap
+   or a double-border between the two segments, regardless of which is active.
+   The active segment slides its left edge 1px left to cover the right edge of Gantt. */
+.tl-view-toggle:last-child{border-radius:0 3px 3px 0;margin-left:-1px}
+/* Active segment: filled with button-background/foreground — visually unmistakable. */
+/* USER OVERRIDE: active segment MUST use --vscode-button-background and --vscode-button-foreground. */
+.tl-view-toggle-active{background:var(--vscode-button-background);color:var(--vscode-button-foreground);border-color:var(--vscode-button-background)}
+/* Segmented control wrapper. */
+.tl-seg-ctrl{display:inline-flex;margin-left:8px}
+/* DAG node group — cursor pointer, focus ring via sibling rect (same as Gantt bars). */
+.tl-dag-node-group{cursor:pointer}
+.tl-dag-node-group:focus{outline:none}
+.tl-dag-node-group:focus .tl-focus-ring{stroke:var(--vscode-focusBorder);stroke-width:2;fill:none}
+/* DAG node rect — rounded, status fill via .tl-bar-* classes (defined above). */
+.tl-dag-node{stroke:none;opacity:.9}
+/* DAG node label text — small, centred, theme-native. */
+.tl-dag-label{fill:var(--vscode-foreground);font-size:10px;font-family:var(--vscode-font-family,sans-serif)}
+/* Pass-column heading labels above each column. */
+.tl-dag-pass-label{fill:var(--vscode-foreground);font-size:9px;font-family:var(--vscode-font-family,sans-serif);opacity:.55;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+/* Dependency edges — elbow polylines, muted foreground color. */
+.tl-dag-edge{fill:none;stroke:var(--vscode-panel-border);stroke-width:1.5}
+/* Arrowhead marker path — same color as edge. */
+.tl-dag-arrowhead{fill:var(--vscode-panel-border)}
+/* forced-colors overrides for DAG elements and segmented control. */
+@media (forced-colors:active){.tl-view-toggle-active{background:Highlight;color:ButtonText;border-color:Highlight}
+  .tl-view-toggle{background:transparent;color:ButtonText;border-color:ButtonText}
+  .tl-dag-node{stroke:ButtonText;stroke-width:1}
+  .tl-dag-edge{stroke:ButtonText}
+  .tl-dag-arrowhead{fill:ButtonText}
+  .tl-dag-label,.tl-dag-pass-label{fill:ButtonText;opacity:1}
+  .tl-dag-node-group:focus .tl-focus-ring{stroke:Highlight}
 }
 `;
 
@@ -340,12 +457,7 @@ body{margin:0;font:12px var(--vscode-font-family);color:var(--vscode-foreground)
 .sb-kpi .val.ok{color:var(--vscode-charts-green,#3fb950)}
 .sb-kpi .val.bad{color:var(--vscode-charts-red,#f85149)}
 .sev{font-size:10px;font-weight:600;padding:1px 5px;border-radius:3px;margin-right:3px;margin-bottom:3px;display:inline-block}
-.CRITICAL{background:rgba(248,81,73,.15);color:var(--vscode-charts-red,#f85149);border:1px solid var(--vscode-charts-red,#f85149)}
-.HIGH{background:rgba(210,100,50,.15);color:var(--vscode-charts-orange,#d26432);border:1px solid var(--vscode-charts-orange,#d26432)}
-.MEDIUM{background:rgba(220,170,0,.15);color:var(--vscode-charts-yellow,#dcaa00);border:1px solid var(--vscode-charts-yellow,#dcaa00)}
-.LOW{background:rgba(63,135,185,.15);color:var(--vscode-charts-blue,#3f87b9);border:1px solid var(--vscode-charts-blue,#3f87b9)}
-.NITPICK{background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}
-.UNRATED{background:var(--vscode-badge-background);color:var(--vscode-badge-foreground)}
+${SEV_BADGE_CSS}
 .sb-agent{display:flex;align-items:baseline;gap:5px;padding:3px 0;border-bottom:1px solid var(--vscode-panel-border);min-width:0}
 .sb-agent:last-child{border-bottom:none}
 .sb-agent .role{font-weight:600;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}

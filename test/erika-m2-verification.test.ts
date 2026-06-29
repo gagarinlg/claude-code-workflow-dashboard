@@ -231,7 +231,7 @@ function makeMinimalSnap(overrides: Partial<SnapshotOk> = {}): SnapshotOk {
     agentsCapped: false,
     loop: {
       phase: 'idle / between passes',
-      live: 0, done: 1, dead: 0, total: 1,
+      live: 0, done: 1, dead: 0, superseded: 0, total: 1,
       outTok: 500, tools: 3, passes: 1, findings: 0, sevTotals: {},
     },
     labels: [],

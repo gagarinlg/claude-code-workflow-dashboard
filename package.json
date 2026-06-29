@@ -2,7 +2,7 @@
   "name": "claude-code-workflow-dashboard",
   "displayName": "Claude Code Workflow Dashboard",
   "description": "Live dashboard for Claude Code workflow runs — loop & agent overview, per-agent output, and review findings, updated in real time. Unofficial community tool, not affiliated with Anthropic.",
-  "version": "0.8.0",
+  "version": "1.0.0",
   "publisher": "malte-langermann",
   "author": {
     "name": "Malte Langermann",
@@ -22,6 +22,8 @@
     "lint": "eslint --no-error-on-unmatched-pattern src test build.mjs scripts",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
+    "make-fixture": "node scripts/make-sample-run.mjs",
+    "prescreenshots": "node -e \"require('playwright')\" 2>/dev/null && node -e \"const {chromium}=require('playwright');chromium.executablePath()&&process.exit(0);process.exit(1)\" 2>/dev/null || (echo 'Playwright Chromium not installed. Run: npx playwright install chromium' && exit 1)",
     "screenshots": "node scripts/screenshot.mjs"
   },
   "devDependencies": {

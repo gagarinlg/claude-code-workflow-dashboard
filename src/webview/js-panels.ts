@@ -18,12 +18,14 @@ const api = acquireVsCodeApi();
 // severity labels, reviewer labels). Using Object.create(null) eliminates the prototype
 // chain, preventing '__proto__' or 'constructor' key collisions regardless of engine version.
 const _s=api.getState()||{};
-// state.activeTab: which tab is currently shown ('agents', 'findings', 'verdicts', 'changed', 'charts', 'results').
+// state.activeTab: which tab is currently shown ('agents', 'findings', 'verdicts', 'changed', 'charts', 'timeline', 'results').
 // state.tabScroll: per-tab scroll position cache (captured before switch, restored after render).
 // state.findPage: current findings page index (0-based, PAGE_SIZE=50).
 // state.openRaw: open/closed state of raw-JSON <details> per result, keyed by r.label+':'+r.pass.
 //   Persists across snapshot re-renders (analogous to openPrompt for prompt disclosures).
-let state={activeTab:_s.activeTab||'agents',tabScroll:Object.assign(Object.create(null),_s.tabScroll||{}),findPage:_s.findPage||0,openAgents:Object.assign(Object.create(null),_s.openAgents||{}),openFind:Object.assign(Object.create(null),_s.openFind||{}),fRev:Object.assign(Object.create(null),_s.fRev||{}),fSev:Object.assign(Object.create(null),_s.fSev||{}),openPrompt:Object.assign(Object.create(null),_s.openPrompt||{}),openRaw:Object.assign(Object.create(null),_s.openRaw||{}),panelOpen:Object.assign(Object.create(null),_s.panelOpen||{})};
+// state.tlZoom: timeline zoom level (0.5–4, default 1). Persisted so it survives re-renders.
+// state.tlScrollLeft: timeline horizontal scroll position (px). Captured before innerHTML replace.
+let state={activeTab:_s.activeTab||'agents',tabScroll:Object.assign(Object.create(null),_s.tabScroll||{}),findPage:_s.findPage||0,openAgents:Object.assign(Object.create(null),_s.openAgents||{}),openFind:Object.assign(Object.create(null),_s.openFind||{}),fRev:Object.assign(Object.create(null),_s.fRev||{}),fSev:Object.assign(Object.create(null),_s.fSev||{}),openPrompt:Object.assign(Object.create(null),_s.openPrompt||{}),openRaw:Object.assign(Object.create(null),_s.openRaw||{}),tlZoom:typeof _s.tlZoom==='number'&&isFinite(_s.tlZoom)?_s.tlZoom:1,tlScrollLeft:typeof _s.tlScrollLeft==='number'&&isFinite(_s.tlScrollLeft)?_s.tlScrollLeft:0,tlAvailW:typeof _s.tlAvailW==='number'&&isFinite(_s.tlAvailW)?_s.tlAvailW:600,timelineView:(_s.timelineView==='dag'||_s.timelineView==='gantt')?_s.timelineView:'gantt'};
 let snap=null;
 const PAGE_SIZE=50;
 function save(){api.setState(state);}
@@ -133,6 +135,7 @@ function tabDefs(){
     {key:'verdicts',label:'Verdicts',enabled:verdictCount>0,badge:''},
     {key:'changed',label:'Changed',enabled:true,badge:''},
     {key:'charts',label:'Charts',enabled:agentCount>0,badge:''},
+    {key:'timeline',label:'Timeline',enabled:agentCount>0,badge:''},
     {key:'results',label:'Results',enabled:resultsCount>0,badge:''}
   ];
 }
@@ -171,6 +174,7 @@ function tabContent(){
   else if(k==='verdicts')body=Object.keys(snap.verdicts).length?verdictsPanel():'<div class="dim pad">No verdicts yet.</div>';
   else if(k==='changed')body=changedPanel();
   else if(k==='charts')body=snap.agents&&snap.agents.length?chartsPanel():'<div class="dim pad">No agents yet.</div>';
+  else if(k==='timeline')body=snap.agents&&snap.agents.length?timelinePanel():'<div class="dim pad" data-testid="tl-empty">No agents yet.</div>';
   else if(k==='results')body=snap.structuredResults&&snap.structuredResults.length?resultsPanel():'<div class="dim pad">No structured results yet.</div>';
   // aria-labelledby references the active tab button
   return '<div id="tab-content" role="tabpanel" aria-labelledby="tab-'+esc(k)+'">'+body+'</div>';
@@ -211,6 +215,10 @@ function render(){
     if(state.tabScroll===null||typeof state.tabScroll!=='object')state.tabScroll=Object.create(null);
     state.tabScroll[state.activeTab]=tc.scrollTop;
   }
+  // Capture timeline horizontal scroll position before innerHTML replace.
+  // tl-scroll is inside #tab-content and is destroyed with it; we persist via state.
+  var tlScrollEl=document.getElementById('tl-scroll');
+  if(tlScrollEl)state.tlScrollLeft=tlScrollEl.scrollLeft;
   // AC3: Capture inner scroll positions for all scrollable sub-regions before innerHTML replace.
   // subPos keys: '<aid>:sub', '<aid>:prompt', 'result:<rlabel>'.
   // This prevents snapshot re-renders from resetting prompt-pre and result-body scroll.
@@ -241,6 +249,13 @@ function render(){
   if(tcNew&&state.tabScroll&&state.tabScroll[state.activeTab]!=null){
     tcNew.scrollTop=state.tabScroll[state.activeTab];
   }
+  // Restore timeline horizontal scroll position after re-render.
+  var tlScrollNew=document.getElementById('tl-scroll');
+  if(tlScrollNew&&state.tlScrollLeft)tlScrollNew.scrollLeft=state.tlScrollLeft;
+  // Persist tl-scroll clientWidth to state.tlAvailW so the NEXT render() uses the
+  // current viewport width instead of querying a stale (pre-replace) element.
+  // Falls back to current state.tlAvailW when tl-scroll is not in the DOM (non-timeline tabs).
+  if(tlScrollNew&&tlScrollNew.clientWidth)state.tlAvailW=tlScrollNew.clientWidth;
   // Update the sr-only live region with a concise status summary. Placing the update
   // AFTER wire() ensures the DOM is settled before the announcement fires.
   // textContent assignment is injection-safe without esc() — the browser does not
@@ -283,20 +298,6 @@ function render(){
     if(hdrEl){const cardEl=hdrEl.closest('.card');const rowEl=cardEl&&!cardEl.classList.contains('open')?cardEl.querySelector('.row'):null;if(rowEl)rowEl.focus({preventScroll:true});else hdrEl.focus({preventScroll:true});}
   }
 }
-// panel(k, t, b): renders a collapsible panel section.
-// k = panel key (must match a key in state.panelOpen); t = display title; b = body HTML.
-// Collapsed state persisted per key in state.panelOpen via api.setState().
-// The h3 is a heading landmark for AT navigation (H-key in screen readers).
-// A real <button> nested inside the h3 carries the interactive collapse role:
-//   tabindex, aria-expanded, and data-pkey are on the <button>, NOT on the h3.
-// wire() targets '.panel>h3>button[data-pkey]' — the h3 itself has no data-pkey.
-// The .panel-chevron rotates via CSS when the 'collapsed' class is absent on .panel.
-// TODO(M3): remove panel() and the corresponding wire() block in js-wire.ts if no callers
-// are added by the M3 milestone. Both are dead code since v3 binding removed all in-tab
-// panel() calls; they are retained only to keep state.panelOpen machinery available for any
-// future collapsible section that may need it. Callers must add panelOpen keys themselves.
-function panel(k,t,b){var isOpen=state.panelOpen[k]!==0;var collCls=isOpen?'':'collapsed';return '<div class="panel '+collCls+'"><h3><button aria-expanded="'+(isOpen?'true':'false')+'" data-pkey="'+esc(k)+'"><span class="panel-chevron" aria-hidden="true">&#9658;</span>'+esc(t)+'</button></h3><div class="body">'+b+'</div></div>';}
-
 // Keep in sync with fmtTok in src/export/markdown.ts (TypeScript version).
 // True deduplication is blocked: this version runs in the webview DOM context.
 function fmtTok(n){var v=safeN(n);return v<1000?v+'':v<1000000?(v/1000).toFixed(1)+'k':(v/1000000).toFixed(2)+'M';}
@@ -336,6 +337,7 @@ function overview(){
     // independent of color, satisfying WCAG 1.4.1 for red-green color-blind users).
     // The sub-label 'no activity >Xm' is also shown at full opacity when stalled > 0.
     +'<div class="kpi" aria-describedby="stalled-panel-desc"><div class="dim">Stalled</div><b'+(L.dead?' class="kpi-stalled-active"':'')+'>'+safeN(L.dead)+'</b><div class="'+(L.dead?'':'dim ')+'kpi-sublabel">no activity '+esc(STALE_LABEL)+'</div><span id="stalled-panel-desc" class="sr-only">'+esc(STALE_TOOLTIP)+'</span></div>'
+    +(L.superseded?'<div class="kpi" aria-describedby="superseded-panel-desc"><div class="dim">Superseded</div><b class="kpi-superseded">'+safeN(L.superseded)+'</b><div class="kpi-sublabel">retried agents</div><span id="superseded-panel-desc" class="sr-only">Agents that were retried before producing a result; excluded from the live count.</span></div>':'')
     +'<div class="kpi"><div class="dim">Agents</div><b>'+safeN(L.total)+'</b></div>'
     +'<div class="kpi"><div class="dim">Out tokens</div><b data-testid="loop-out-tok">'+fmtTok(L.outTok)+'</b></div>'
     +'<div class="kpi"><div class="dim">Tool-calls</div><b data-testid="loop-tools">'+safeN(L.tools)+'</b></div>'
@@ -687,10 +689,13 @@ function agentsPanel(){
     // escCls: whitespace-safe CSS class token (a.status is typed as 'run'|'done'|'dead' but
     // received as unvalidated JSON from postMessage — escCls closes the theoretical whitespace
     // injection gap consistently with how severity keys are handled).
-    const es=escCls(a.status);
+    // For superseded agents use the 'superseded' CSS class so the yellow badge style applies;
+    // for other statuses use the raw status key (escCls-sanitised).
+    const es=a.superseded?'superseded':escCls(a.status);
     // 'dead' is the internal status key (CSS class, TS type); user-facing label is 'stalled'
     // so the UI communicates that the agent stopped responding, not that it errored out.
-    const statusLabel=a.status==='dead'?'stalled':a.status==='run'?'live':es;
+    // Superseded agents get the 'superseded' label — mirrors the logic in timelinePanel().
+    const statusLabel=a.superseded?'superseded':a.status==='dead'?'stalled':a.status==='run'?'live':es;
     // Build agent metrics line: always show tool-calls + output tokens; add
     // optional input/cache tokens only when the field is present on this agent.
     // safeN() prevents NaN from reaching the UI for any unexpected type.
@@ -736,7 +741,7 @@ function agentsPanel(){
     // aria-controls on the .row button points to the .sub element so AT can locate
     // the controlled content (WCAG 4.1.2 Name/Role/Value for expand/collapse pattern).
     var subId='sub-'+esc(a.id);
-    return '<div class="card '+es+' '+open+'" data-aid="'+esc(a.id)+'">'
+    return '<div class="card '+escCls(a.status)+' '+(a.superseded?'superseded-card ':'')+open+'" data-aid="'+esc(a.id)+'">'
       +'<div class="row" tabindex="0" role="button" aria-expanded="'+(open?'true':'false')+'" aria-controls="'+subId+'"><span class="card-chevron" aria-hidden="true">&#9658;</span><span class="role">'+esc(a.label)+'</span><span class="st '+es+'">'+statusLabel+'</span><span class="grow"></span><span class="dim">'+fmtTHtml(a.elapsed)+'</span></div>'
       +'<div class="agent-metrics" role="group" aria-label="Agent metrics">'+metrics+'</div>'
       // aria-hidden on the ↳ arrow: it is decorative (indicates sub-item/continuation).
@@ -1035,7 +1040,7 @@ function tokenBarChart(){
     // sliced mid-character (e.g. &quot; sliced to &quot becomes a dangling &).
     // The full escaped label is used in <title> for the tooltip.
     var rawLabel=a.label||'agent';
-    var truncLabel=rawLabel.slice(0,14)+(rawLabel.length>14?'…':'');
+    var truncLabel=rawLabel.slice(0,TL_LABEL_TRUNC)+(rawLabel.length>TL_LABEL_TRUNC?'…':'');
     var lbl=esc(rawLabel);
     var lblTrunc=esc(truncLabel);
     // aria-hidden on <g>: the SVG root carries role="img" with aria-label that is the
@@ -1115,6 +1120,411 @@ function tokenTrendChart(){
     // Max label — font-size and font-family via CSS class chart-trend-label (forced-colors compatible)
     +'<text x="'+(W-PAD)+'" y="'+(PAD+8)+'" text-anchor="end" class="chart-trend-label">'+fmtTok(maxCum)+'</text>'
     +'</svg>';
+}
+
+// ---------------------------------------------------------------------------
+// M3-Timeline: Gantt visualization panel.
+//
+// Lane model: one lane per unique agent label (role-grouped). Bars within a
+// lane are stacked left-to-right by start time. Lanes ordered by earliest start.
+// Live agents extend to "now" with a pulsing right-edge cap.
+// Superseded agents use the .tl-bar-superseded class (striped/faded).
+//
+// Time axis: linear — x = LABEL_W + zoom·K·(t − tMin).
+// USER OVERRIDE: log-compressed axis is forbidden per m3-timeline-spec.md.
+//
+// Accessibility:
+//   SVG: role=img + aria-label (chart-level).
+//   Bars: role=button, tabindex=0, aria-label with status+elapsed.
+//   Focus ring: sibling <rect class="tl-focus-ring"> shown via CSS :focus on bar.
+//   Keyboard: Arrow / Home / End among bars; Enter to jump to Agents tab.
+//   SR table: visually-hidden <table> with Role/Status/Start/Duration columns.
+//   forced-colors @media: in css.ts (not inline style).
+//
+// CSP compliance:
+//   No inline style= on SVG elements (all fills via CSS classes or presentation attrs).
+//   No inline event handlers (all wired in js-wire.ts via addEventListener).
+//   el.style.left / el.style.top on the named tooltip node IS allowed (named node, not innerHTML style=).
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// M3-DepGraph: DAG sub-view for the Timeline tab.
+//
+// Layout: layered-by-pass columns (index-based coordinates, LAYER_W spacing).
+// Nodes: rounded rects colored by status via CSS class (no inline style=).
+// Edges: polylines between consecutive same-key agents with SVG <marker> arrowhead.
+// No physics, no external lib. All fills via CSS classes (CSP-safe).
+// Renders at 1 agent and at 50+ agents; no inline style= anywhere.
+// ---------------------------------------------------------------------------
+var DAG_LAYER_W=160;     // px: horizontal gap between pass columns
+var DAG_NODE_W=130;      // px: node width
+var DAG_NODE_H=28;       // px: node height
+var DAG_NODE_GAP=10;     // px: vertical gap between nodes in the same pass
+var DAG_PAD=16;          // px: canvas padding
+var DAG_EDGE_COLOR_CLS='tl-dag-edge'; // CSS class for edge polylines
+
+function dagPanel(agents){
+  // Declare TL_LABEL_TRUNC locally so this function is self-contained when extracted
+  // by test harnesses (extractBalancedFn) — the module-level var is not in scope there.
+  var TL_LABEL_TRUNC=16;
+  if(!agents||!agents.length){
+    return '<div class="dim pad" data-testid="dag-empty">No agents yet.</div>';
+  }
+  // Pass assignment: for each unique key, count occurrences in start order → pass number.
+  // Pass column uses agentPass[a.id] — the count of agents with this key seen so far at
+  // iteration time; NOT agent.idx (which is a global arrival-order index, not a pass count).
+  // Build pass→[agents] map. Agents are already start-sorted by buildSnapshot.
+  var keyPassCount=Object.create(null);
+  var passMap=Object.create(null); // pass(1-based) → [agent]
+  // agentPass records each agent's individual ordinal at the time of iteration.
+  // keyPassCount is incremented first, then the current value is the agent's pass number.
+  // Reading keyPassCount AFTER the loop gives the total count for the key — NOT the per-agent ordinal.
+  var agentPass=Object.create(null);
+  agents.forEach(function(a){
+    var k=a.key||a.label||'agent';
+    keyPassCount[k]=(keyPassCount[k]||0)+1;
+    var p=keyPassCount[k];
+    agentPass[a.id]=p; // capture per-agent ordinal before any further increments
+    if(!passMap[p])passMap[p]=[];
+    passMap[p].push(a);
+  });
+  var passes=Object.keys(passMap).map(Number).sort(function(a,b){return a-b;});
+  var maxNodesInPass=passes.reduce(function(m,p){return Math.max(m,(passMap[p]||[]).length);},0);
+
+  // Node positions: {aid → {cx, cy}} — computed per column.
+  // x centre of column p = DAG_PAD + (p-1)*DAG_LAYER_W + DAG_NODE_W/2
+  // y of node i in column = DAG_PAD + i*(DAG_NODE_H + DAG_NODE_GAP) + DAG_NODE_H/2
+  var nodePos=Object.create(null);
+  passes.forEach(function(p){
+    var nodesInPass=passMap[p];
+    var cx=DAG_PAD+(p-1)*DAG_LAYER_W+DAG_NODE_W/2;
+    nodesInPass.forEach(function(a,i){
+      var cy=DAG_PAD+i*(DAG_NODE_H+DAG_NODE_GAP)+DAG_NODE_H/2;
+      nodePos[a.id]={cx:cx,cy:cy};
+    });
+  });
+
+  var svgW=DAG_PAD*2+(passes.length>0?(passes[passes.length-1]-1)*DAG_LAYER_W+DAG_NODE_W:DAG_NODE_W);
+  var svgH=DAG_PAD*2+maxNodesInPass*(DAG_NODE_H+DAG_NODE_GAP);
+
+  // Build an edge list: for each key, connect agents in start-order (consecutive same-key pairs).
+  var byKey=Object.create(null);
+  agents.forEach(function(a){
+    var k=a.key||a.label||'agent';
+    if(!byKey[k])byKey[k]=[];
+    byKey[k].push(a);
+  });
+  var edgesSvg='';
+  Object.keys(byKey).forEach(function(k){
+    var chain=byKey[k];
+    for(var i=0;i<chain.length-1;i++){
+      var src=chain[i];var dst=chain[i+1];
+      var sp=nodePos[src.id];var dp=nodePos[dst.id];
+      if(!sp||!dp)return;
+      // Polyline from right-centre of src node to left-centre of dst node.
+      // Midpoint x for the elbow = halfway between src right and dst left.
+      var x1=sp.cx+DAG_NODE_W/2;var y1=sp.cy;
+      var x2=dp.cx-DAG_NODE_W/2;var y2=dp.cy;
+      var mx=(x1+x2)/2;
+      // Elbow polyline: src-right → mid-top → mid-bottom → dst-left.
+      // Points: (x1,y1) (mx,y1) (mx,y2) (x2,y2)
+      var pts=x1+','+y1+' '+mx+','+y1+' '+mx+','+y2+' '+x2+','+y2;
+      edgesSvg+='<polyline points="'+pts+'" class="'+DAG_EDGE_COLOR_CLS+'" marker-end="url(#dag-arrow)" data-testid="dag-edge"/>';
+    }
+  });
+
+  // Node rects.
+  var nodesSvg='';
+  agents.forEach(function(a){
+    var pos=nodePos[a.id];if(!pos)return;
+    var x=pos.cx-DAG_NODE_W/2;var y=pos.cy-DAG_NODE_H/2;
+    var statusCls='tl-bar-'+(a.superseded?'superseded':a.status==='run'?'run':a.status==='done'?'done':'dead');
+    var statusLabel=a.superseded?'superseded':a.status==='dead'?'stalled':a.status==='run'?'live':a.status;
+    var rawLbl=a.label||'agent';
+    var truncLbl=rawLbl.length>TL_LABEL_TRUNC?rawLbl.slice(0,TL_LABEL_TRUNC-1)+'…':rawLbl;
+    var ariaLbl=esc(rawLbl)+' — '+esc(statusLabel);
+    // Node group: role=button so keyboard users can activate (jump to agent card).
+    nodesSvg+='<g role="button" tabindex="0" aria-label="'+ariaLbl+'" class="tl-dag-node-group" data-tlaid="'+esc(a.id)+'" data-tlstatus="'+esc(statusLabel)+'">'
+      // Rounded rect — fill via CSS class matching Gantt bar classes (status-colored).
+      +'<rect x="'+x+'" y="'+y+'" width="'+DAG_NODE_W+'" height="'+DAG_NODE_H+'" rx="5" class="tl-dag-node '+esc(statusCls)+'" data-testid="dag-node"/>'
+      // Focus ring (sibling rect, shown via CSS on :focus).
+      +'<rect x="'+(x-2)+'" y="'+(y-2)+'" width="'+(DAG_NODE_W+4)+'" height="'+(DAG_NODE_H+4)+'" rx="6" class="tl-focus-ring"/>'
+      // Label text — truncated.
+      +'<text x="'+pos.cx+'" y="'+(pos.cy+4)+'" text-anchor="middle" class="tl-dag-label" aria-hidden="true">'+esc(truncLbl)+'</text>'
+      +'</g>';
+  });
+
+  // Pass column headings above each column.
+  var headingsSvg='';
+  passes.forEach(function(p){
+    var cx=DAG_PAD+(p-1)*DAG_LAYER_W+DAG_NODE_W/2;
+    headingsSvg+='<text x="'+cx+'" y="'+(DAG_PAD-4)+'" text-anchor="middle" class="tl-dag-pass-label" aria-hidden="true">Pass '+safeN(p)+'</text>';
+  });
+
+  // SVG marker for arrowhead — defined once in <defs>, referenced by marker-end.
+  // Fill via CSS class on the marker path (forced-colors compatible).
+  var defs='<defs>'
+    +'<marker id="dag-arrow" markerWidth="8" markerHeight="8" refX="8" refY="3" orient="auto">'
+    +'<path d="M0,0 L0,6 L8,3 z" class="tl-dag-arrowhead" data-testid="dag-arrowhead"/>'
+    +'</marker>'
+    +'</defs>';
+
+  // SR table (accessible alternative).
+  var srRows=agents.map(function(a){
+    // Use per-agent pass ordinal captured during the layout loop above.
+    // agentPass[a.id] is this agent's individual pass number (1-based).
+    // keyPassCount[k] would give the TOTAL count for the key — wrong for multi-pass keys.
+    var p=agentPass[a.id]||1;
+    var statusLabel=a.superseded?'superseded':a.status==='dead'?'stalled':a.status==='run'?'live':a.status;
+    return '<tr><td>'+esc(a.label)+'</td><td>'+safeN(p)+'</td><td>'+esc(statusLabel)+'</td></tr>';
+  }).join('');
+  var srTable='<div class="sr-only"><table data-testid="dag-sr-table" aria-label="Agent dependency graph data">'
+    +'<thead><tr><th>Role</th><th>Pass</th><th>Status</th></tr></thead>'
+    +'<tbody>'+srRows+'</tbody></table></div>';
+
+  var scrollDiv='<div class="tl-scroll" id="tl-dag-scroll" tabindex="-1">'
+    +'<svg xmlns="http://www.w3.org/2000/svg" width="'+svgW+'" height="'+svgH+'" role="img"'
+    +' aria-label="Agent dependency graph — '+agents.length+' agents, '+passes.length+' passes"'
+    +' data-testid="dag-svg" overflow="visible">'
+    +defs+edgesSvg+nodesSvg+headingsSvg
+    +'</svg>'
+    +'</div>';
+
+  return srTable+scrollDiv;
+}
+
+// Shared agent label truncation cap applied across bar chart, Gantt lane labels, and DAG nodes.
+// A single constant ensures a given label renders identically in all three views, preventing
+// the disorientation of seeing "Implement/F…" in one view and "Implement/Fix" in another.
+// 16 chars matches the Gantt lane column width at 11px font (previously bar=14, Gantt=16, DAG=18).
+var TL_LABEL_TRUNC=16;
+
+// Timeline geometry constants — not configurable, match the CSS lane heights.
+var TL_LABEL_W=120;      // px: sticky label column width
+var TL_LANE_H=26;        // px: height of each agent bar
+var TL_LANE_GAP=6;       // px: gap between lanes
+var TL_TICK_H=18;        // px: tick-label row height above lanes
+var TL_K=80;             // fallback px/sec base scale at zoom=1 (LINEAR time axis — per binding spec override; was log-compressed in earlier spec drafts; used when rangeS=0 or clientWidth unavailable)
+var TL_BAR_CAP=40;       // max lanes before banner
+
+// Tick intervals (seconds) — shown filtered to the data range.
+var TL_TICK_SECS=[30,60,120,300,600,1200,1800];
+
+// fmtTLTime: format seconds for timeline tick labels (e.g. 30s, 1m, 5m).
+// Input is rounded before formatting because tick times are computed as integer multiples
+// of tickInterval minus tMin (a float Unix timestamp), producing float deltas like 29.877s
+// or 30.0013s. Without rounding, labels would read '29.877s' instead of '30s'.
+function fmtTLTime(s){var v=Math.round(s);if(v<60)return v+'s';if(v<3600)return Math.floor(v/60)+'m';return Math.floor(v/3600)+'h';}
+
+// fmtElapsedSR: plain-text elapsed for screen reader table (no HTML tags).
+// Returns '<1s' for zero elapsed — note the raw '<' character. Callers MUST
+// pass this through esc() before injecting into HTML (aria-label or table cell).
+// Do NOT treat this as HTML-safe — the raw '<' will break HTML if injected unescaped.
+// For innerHTML injection use fmtTHtml() instead (it returns '&lt;1s', the HTML-safe form).
+// Cross-reference: fmtTHtml() at line 44 is the HTML-safe counterpart of this function.
+function fmtElapsedSR(s){var v=safeN(s);if(v===0)return '<1s';if(v<60)return v+'s';if(v<3600)return Math.floor(v/60)+'m'+String(v%60).padStart(2,'0')+'s';return Math.floor(v/3600)+'h'+String(Math.floor(v%3600/60)).padStart(2,'0')+'m';}
+
+// tlX: linear x coordinate for a given time offset (seconds from tMin).
+// Formula: x = LABEL_W + zoom * K * dt  (K = pixels-per-second base scale).
+// k defaults to TL_K when omitted for backward-compatibility with test harnesses.
+function tlX(dt,zoom,k){var _k=k!==undefined?k:TL_K;return TL_LABEL_W+zoom*_k*Math.max(0,dt);}
+
+function timelinePanel(){
+  // Declare TL_LABEL_TRUNC locally so this function is self-contained when extracted
+  // by test harnesses (extractBalancedFn) — the module-level var is not in scope there.
+  var TL_LABEL_TRUNC=16;
+  // Collect all agents (including superseded — they render with a distinct class).
+  var agents=snap.agents;
+  if(!agents||!agents.length)return '<div class="dim pad" data-testid="tl-empty">No agents yet.</div>';
+
+  var now=(typeof window!=='undefined'&&typeof window._FAKE_NOW_SECS==='number'?window._FAKE_NOW_SECS:Date.now()/1000);
+  // Group agents by label (role-grouped lanes).
+  // Lane order: earliest start per label.
+  var laneMap=Object.create(null); // label -> [{agent,...}]
+  agents.forEach(function(a){
+    var lbl=a.label||'agent';
+    if(!laneMap[lbl])laneMap[lbl]=[];
+    laneMap[lbl].push(a);
+  });
+  // Build lane list sorted by earliest start in each lane.
+  var lanes=Object.keys(laneMap).map(function(lbl){
+    var members=laneMap[lbl];
+    var earliest=Math.min.apply(null,members.map(function(a){return safeN(a.start)||now;}));
+    return {lbl:lbl,members:members,earliest:earliest};
+  }).sort(function(a,b){return a.earliest-b.earliest;});
+
+  var cappedLanes=lanes.length>TL_BAR_CAP;
+  var visLanes=cappedLanes?lanes.slice(0,TL_BAR_CAP):lanes;
+
+  // Global time range across all visible agents.
+  var tMin=Infinity,tMax=-Infinity;
+  visLanes.forEach(function(lane){
+    lane.members.forEach(function(a){
+      var s=safeN(a.start)||now;
+      var e=a.status==='run'?now:safeN(a.mtime)||s;
+      if(s<tMin)tMin=s;
+      if(e>tMax)tMax=e;
+    });
+  });
+  if(!isFinite(tMin)){tMin=now;tMax=now+60;}
+  if(tMax<=tMin)tMax=tMin+60;
+
+  var zoom=state.tlZoom||1;
+  // Compute rangeS first so localK can be derived from it (avoids TL_K mutation).
+  var rangeS=tMax-tMin;
+  // Use persisted tlAvailW from state (updated by wire() after each render) rather than
+  // reading clientWidth here, which would find the element from the PREVIOUS render —
+  // one cycle stale. On first render state.tlAvailW defaults to 600px.
+  var tlAvailW=(state.tlAvailW||600)-TL_LABEL_W;
+  var localK=rangeS>0?Math.max(1,tlAvailW/rangeS):TL_K;
+  // SVG dimensions.
+  var svgW=Math.ceil(tlX(tMax-tMin,zoom,localK))+20;
+  var svgH=TL_TICK_H+visLanes.length*(TL_LANE_H+TL_LANE_GAP);
+
+  // Build tick positions. Pick intervals that fall within the range.
+  // Choose tick interval: first TL_TICK_SECS that would produce 2-12 ticks.
+  var tickInterval=TL_TICK_SECS[TL_TICK_SECS.length-1];
+  for(var ti=0;ti<TL_TICK_SECS.length;ti++){
+    var cand=TL_TICK_SECS[ti];
+    var cnt=Math.floor(rangeS/cand);
+    if(cnt>=2&&cnt<=12){tickInterval=cand;break;}
+    if(cnt<2){tickInterval=cand;break;}
+  }
+  var ticks=[];
+  var firstTick=Math.ceil(tMin/tickInterval)*tickInterval;
+  for(var t=firstTick;t<=tMax;t+=tickInterval){
+    ticks.push({dt:t-tMin,label:fmtTLTime(t-tMin)});
+  }
+
+  // Render SVG rows.
+  var tickSvg='';
+  // Grid lines + tick labels.
+  ticks.forEach(function(tk){
+    var x=Math.round(tlX(tk.dt,zoom,localK));
+    // Vertical grid line — CSS class tl-grid-line (no inline stroke).
+    tickSvg+='<line x1="'+x+'" y1="'+TL_TICK_H+'" x2="'+x+'" y2="'+svgH+'" class="tl-grid-line"/>';
+    // Tick label above the grid.
+    tickSvg+='<text x="'+x+'" y="'+(TL_TICK_H-4)+'" text-anchor="middle" class="tl-tick-label" aria-hidden="true">'+esc(tk.label)+'</text>';
+  });
+
+  // Lane labels (sticky left column) + bars.
+  var barsSvg='';
+  var barsMeta=[]; // for SR table
+  visLanes.forEach(function(lane,li){
+    var y0=TL_TICK_H+li*(TL_LANE_H+TL_LANE_GAP);
+    var yBar=y0+2;
+    var barH=TL_LANE_H-4;
+    // Sticky label background (covers the bar area behind it).
+    barsSvg+='<rect x="0" y="'+y0+'" width="'+TL_LABEL_W+'" height="'+TL_LANE_H+'" class="tl-label-bg"/>';
+    // Lane label text — truncated, right-aligned in the label column.
+    var rawLbl=lane.lbl;
+    var truncLbl=rawLbl.length>TL_LABEL_TRUNC?rawLbl.slice(0,TL_LABEL_TRUNC-1)+'…':rawLbl;
+    barsSvg+='<text x="'+(TL_LABEL_W-6)+'" y="'+(y0+TL_LANE_H/2+4)+'" text-anchor="end" class="tl-lane-label" aria-hidden="true">'+esc(truncLbl)+'</text>';
+    // Sort members by start time within the lane.
+    var members=lane.members.slice().sort(function(a,b){return (safeN(a.start)||0)-(safeN(b.start)||0);});
+    members.forEach(function(a){
+      var aStart=safeN(a.start)||tMin;
+      var aEnd=a.status==='run'?now:safeN(a.mtime)||aStart;
+      var x1=Math.round(tlX(aStart-tMin,zoom,localK));
+      var x2=Math.round(tlX(aEnd-tMin,zoom,localK));
+      var barW=Math.max(3,x2-x1);
+      var statusCls='tl-bar-'+(a.superseded?'superseded':a.status==='run'?'run':a.status==='done'?'done':'dead');
+      var statusLabel=a.superseded?'superseded':a.status==='dead'?'stalled':a.status==='run'?'live':a.status;
+      var elapsedS=Math.round(aEnd-aStart);
+      var ariaLbl=esc(a.label)+' — '+esc(statusLabel)+' — '+esc(fmtElapsedSR(elapsedS));
+      var bid='tl-bar-'+esc(a.id);
+      // Bar group: role=button, tabindex=0, aria-label, data attrs for wire().
+      barsSvg+='<g role="button" tabindex="0" aria-label="'+ariaLbl+'"'
+        +' data-tlaid="'+esc(a.id)+'" data-tlstatus="'+esc(statusLabel)+'"'
+        +' class="tl-bar-group" id="'+bid+'">'
+        // Main bar rect — fill via CSS class.
+        +'<rect x="'+x1+'" y="'+yBar+'" width="'+barW+'" height="'+barH+'" rx="3" class="'+esc(statusCls)+'" data-testid="tl-bar"/>'
+        // Stripe overlay for superseded agents (diagonal hatching via SVG <pattern>).
+        // opacity is set via CSS class tl-stripe-overlay (not bare attribute) so that
+        // @media(forced-colors:active) can suppress it by setting display:none.
+        +(a.superseded?'<rect x="'+x1+'" y="'+yBar+'" width="'+barW+'" height="'+barH+'" rx="3" fill="url(#tl-stripe)" class="tl-stripe-overlay"/>':'')
+        // Focus ring (sibling rect, shown via CSS .tl-bar-group:focus .tl-focus-ring).
+        +'<rect x="'+(x1-2)+'" y="'+(yBar-2)+'" width="'+(barW+4)+'" height="'+(barH+4)+'" rx="4" class="tl-focus-ring"/>'
+        // Pulsing right-edge cap for live agents (hidden for others via CSS class).
+        +(a.status==='run'&&!a.superseded?'<rect x="'+(x1+barW-4)+'" y="'+yBar+'" width="4" height="'+barH+'" rx="2" class="tl-live-cap"/>':'')
+        +'</g>';
+      barsMeta.push({label:a.label,status:statusLabel,start:aStart,elapsed:elapsedS});
+    });
+  });
+
+  // Superseded stripe <pattern> definition — emitted only when at least one agent is superseded
+  // so the SVG has no dead <defs> when unneeded.
+  var hasSuperseded=visLanes.some(function(lane){return lane.members.some(function(a){return !!a.superseded;});});
+  var defs=hasSuperseded
+    ?'<defs><pattern id="tl-stripe" patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)"><rect width="4" height="8" class="tl-stripe-fill"/></pattern></defs>'
+    :'';
+
+  // SR table (visually hidden, accessible alternative to the SVG).
+  var srRows=barsMeta.map(function(m){
+    return '<tr><td>'+esc(m.label)+'</td><td>'+esc(m.status)+'</td>'
+      +'<td>'+esc(new Date(m.start*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}))+'</td>'
+      +'<td>'+esc(fmtElapsedSR(m.elapsed))+'</td></tr>';
+  }).join('');
+  var srTable='<div class="sr-only"><table data-testid="tl-sr-table" aria-label="Agent timeline data">'
+    +'<thead><tr><th>Role</th><th>Status</th><th>Start</th><th>Duration</th></tr></thead>'
+    +'<tbody>'+srRows+'</tbody></table></div>';
+
+  var capBanner=cappedLanes?'<div class="cap-warn" data-testid="tl-cap-banner">Showing '+TL_BAR_CAP+' of '+esc(String(lanes.length))+' lanes — run may be larger.</div>':'';
+
+  // Tooltip div (positioned absolutely; position set via el.style.left/top in wire() — named node allowed by CSP).
+  var tooltip='<div id="tl-tooltip" class="tl-tooltip" hidden></div>';
+
+  // Zoom controls + segmented control [Gantt | Graph].
+  // Radiogroup pattern: role="radiogroup" + role="radio" + aria-checked is the correct
+  // ARIA pattern for an exclusive segmented control (not toggle-button / aria-pressed).
+  var isDag=state.timelineView==='dag';
+  // Zoom controls are hidden (aria-hidden + disabled) when DAG view is active because
+  // dagPanel() uses fixed layout constants and does not respond to state.tlZoom.
+  // Showing operable zoom buttons that have no effect is deceptive (WCAG 4.1.2).
+  // Use the HTML boolean hidden attribute rather than style="display:none" — the
+  // nonce-restricted CSP (style-src nonce-...) blocks inline style= on arbitrary DOM
+  // elements, so style= would be silently ignored in the real VS Code webview. The
+  // hidden attribute is CSP-safe, semantically correct, and recognized by all VS Code
+  // webview Chromium versions. No CSS class change needed.
+  var zoomBtnAttrs=isDag?' disabled aria-hidden="true" hidden':'';
+  var zoomLabelAttrs=isDag?' aria-hidden="true" hidden':'';
+  var zoomCtrl='<div class="tl-zoom-ctrl">'
+    +'<button id="tlZoomOut" class="tl-zoom-btn" aria-label="Zoom out timeline" title="Zoom out"'+zoomBtnAttrs+'>&#8722;</button>'
+    +'<span class="tl-zoom-label"'+zoomLabelAttrs+'>'+Math.round(zoom*100)+'%</span>'
+    +'<button id="tlZoomIn" class="tl-zoom-btn" aria-label="Zoom in timeline" title="Zoom in"'+zoomBtnAttrs+'>&#43;</button>'
+    // Segmented control — radiogroup pattern; active class on whichever view is current.
+    +'<div class="tl-seg-ctrl" role="radiogroup" aria-label="Timeline view">'
+    +'<button id="tlViewGantt" class="tl-view-toggle'+(!isDag?' tl-view-toggle-active':'')+'"'
+    +' role="radio" aria-checked="'+(!isDag?'true':'false')+'"'
+    +' title="Switch to Gantt view">Gantt</button>'
+    +'<button id="tlViewToggle" class="tl-view-toggle'+(isDag?' tl-view-toggle-active':'')+'"'
+    +' role="radio" aria-checked="'+(isDag?'true':'false')+'"'
+    +' title="Switch to dependency graph view"'
+    +' data-testid="tl-view-toggle">Graph</button>'
+    +'</div>'
+    +'</div>';
+
+  var svgBody=defs+tickSvg+barsSvg;
+
+  // Scrollable wrapper — horizontal scroll, id used by wire() for scroll capture/restore.
+  var scrollDiv='<div id="tl-scroll" class="tl-scroll" tabindex="-1">'
+    +'<svg xmlns="http://www.w3.org/2000/svg" width="'+svgW+'" height="'+svgH+'" role="img"'
+    +' aria-label="Agent Gantt timeline — '+visLanes.length+' roles, '+barsMeta.length+' agents"'
+    +' data-testid="tl-svg" overflow="visible">'
+    +svgBody
+    +'</svg>'
+    +'</div>';
+
+  // tooltip is rendered outside the ganttView/dagPanel branches so wire() can
+  // always query #tl-tooltip regardless of which sub-view is active.
+  var ganttView=capBanner+zoomCtrl+srTable+scrollDiv;
+
+  // If DAG view is active, replace the chart area with the DAG sub-view.
+  // The zoom controls + toggle button are always shown (toggle persists view choice).
+  if(isDag){
+    return capBanner+zoomCtrl+dagPanel(agents)+tooltip;
+  }
+  return ganttView+tooltip;
 }
 
 function chartsPanel(){

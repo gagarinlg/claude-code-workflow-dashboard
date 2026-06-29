@@ -207,9 +207,10 @@ export function classify(text: string, roleRules: RoleRule[]): ClassifyResult {
         return { label: r.label, key: r.key ?? r.label.toLowerCase() };
       }
     } catch {
-      if (head.includes(r.re)) {
-        return { label: r.label, key: r.key ?? r.label.toLowerCase() };
-      }
+      // The regex failed to compile (invalid pattern that passed length + structural checks).
+      // Skip this rule entirely rather than falling back to a literal-string match, which
+      // would silently produce wrong results for patterns like '\d+' that users intend as regex.
+      continue;
     }
   }
   const lbl = deriveLabel(text);

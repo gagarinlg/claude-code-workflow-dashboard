@@ -22,10 +22,22 @@ export default tseslint.config(
       'security/detect-object-injection': 'off',
     },
   },
-  // Apply basic JS rules to build scripts and utility scripts (.mjs).
+  // Apply security rules to build scripts and utility scripts (.mjs).
   // These files use @ts-check for editor-level type inference but are not
   // compiled by tsc, so typescript-eslint rules are not applied — only base ESLint.
+  // The security plugin is included here because scripts contain path construction,
+  // rmSync, and dynamic imports that warrant static security analysis, even without
+  // TypeScript type information. The same two high-noise rules are suppressed here
+  // for the same reasons as in the TS block: every non-literal path in scripts is
+  // intentional (fixture paths from os.tmpdir()) and bracket notation is used for
+  // CSS custom property enumeration (Object.entries(vars)).
   {
     files: ['*.mjs', 'scripts/**/*.mjs'],
+    plugins: { security },
+    rules: {
+      ...security.configs.recommended.rules,
+      'security/detect-non-literal-fs-filename': 'off',
+      'security/detect-object-injection': 'off',
+    },
   },
 );

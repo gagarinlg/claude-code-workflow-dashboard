@@ -13,18 +13,19 @@ export interface RecentRun {
   agentCount: number;
 }
 
-// Collect ALL .../workflows/wf_* directories under base (no depth limit beyond
-// the traversal bound), stat each once, count agent files, and return them
-// sorted newest-first by mtime. node_modules and vendor subtrees are skipped.
-// Returns an empty array if base is inaccessible or contains no wf_* dirs.
-// TODO(M3-tech-debt): listRecentRuns and findWorkflowDir independently traverse the same
-// directory tree. On every polling tick (default 4 s), buildSnapshot() calls findWorkflowDir()
-// and runSelectRun() calls listRecentRuns() — both performing a full O(N) readdirSync walk.
-// The correct fix is to extract a shared walkWfDirs(base) function that both call, with a
-// 2-second in-memory cache to absorb file-watcher burst calls. Alternatively, derive
-// findWorkflowDir as a simple first-element projection over listRecentRuns() results
-// (dependency direction is already correct: snapshot.ts → discovery.ts). Deferred to M3.
-export function listRecentRuns(base: string, depth = 5): RecentRun[] {
+// ---------------------------------------------------------------------------
+// walkWfDirs: shared traversal used by both listRecentRuns and findWorkflowDir.
+//
+// Previously each function independently walked the same directory tree, resulting
+// in two full O(N) readdirSync walks per polling tick (findWorkflowDir for
+// buildSnapshot + listRecentRuns for the run-picker QuickPick). This shared
+// implementation eliminates the duplicate work. Both public functions are now
+// simple projections over walkWfDirs results.
+//
+// Skips node_modules, vendor, and hidden directories — mirrors changed.ts:53
+// and the existing findWorkflowDir pattern (no wf_* dirs live inside them).
+// ---------------------------------------------------------------------------
+function walkWfDirs(base: string, depth = 5): RecentRun[] {
   const runs: RecentRun[] = [];
   const visit = (dir: string, d: number): void => {
     if (d < 0) return;
@@ -35,6 +36,7 @@ export function listRecentRuns(base: string, depth = 5): RecentRun[] {
       return;
     }
     for (const e of entries) {
+      // Skip symlinks to avoid following loops or escaping the watched tree.
       if (!e.isDirectory() || e.isSymbolicLink()) continue;
       const p = path.join(dir, e.name);
       if (e.name.startsWith('wf_') && path.basename(dir) === 'workflows') {
@@ -47,7 +49,7 @@ export function listRecentRuns(base: string, depth = 5): RecentRun[] {
         }
         // Count agent transcript files defensively (readdirSync may fail for any dir).
         // withFileTypes:true + isSymbolicLink() matches the symlink-safe pattern used
-        // everywhere else in the codebase (snapshot.ts, changed.ts, findWorkflowDir).
+        // everywhere else in the codebase (snapshot.ts, changed.ts).
         let agentCount = 0;
         try {
           agentCount = fs.readdirSync(p, { withFileTypes: true }).filter(
@@ -57,7 +59,9 @@ export function listRecentRuns(base: string, depth = 5): RecentRun[] {
           // Leave agentCount = 0 if the dir is unreadable.
         }
         runs.push({ dir: p, runId: e.name, mtimeMs, agentCount });
-      } else if (e.name === 'node_modules' || e.name === 'vendor') {
+      } else if (e.name === 'node_modules' || e.name === 'vendor' || e.name.startsWith('.')) {
+        // Skip hidden directories (.git, .ssh, .cache, etc.) — no wf_* dirs live there
+        // and descending into them adds unnecessary I/O. Mirrors changed.ts:53 pattern.
         continue;
       } else {
         visit(p, d - 1);
@@ -65,6 +69,15 @@ export function listRecentRuns(base: string, depth = 5): RecentRun[] {
     }
   };
   visit(base, depth);
+  return runs;
+}
+
+// Collect ALL .../workflows/wf_* directories under base, stat each once,
+// count agent files, and return them sorted newest-first by mtime.
+// node_modules and vendor subtrees are skipped; search depth is bounded.
+// Returns an empty array if base is inaccessible or contains no wf_* dirs.
+export function listRecentRuns(base: string, depth = 5): RecentRun[] {
+  const runs = walkWfDirs(base, depth);
   runs.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return runs;
 }
@@ -85,42 +98,15 @@ export function formatRelativeTime(mtimeMs: number, nowMs: number = Date.now()):
 
 // Recursively find the newest .../workflows/wf_* directory under base.
 // Returns the single globally-newest wf_* dir by mtime (no date filter).
-// node_modules and vendor subtrees are skipped; search depth is bounded.
-// TODO(M3-tech-debt): this traversal duplicates the one in listRecentRuns — see note there.
+// Implemented as the first-element projection over walkWfDirs() results, which
+// eliminates the previously duplicated tree traversal (one walk per tick, not two).
 export function findWorkflowDir(base: string, depth = 5): string | null {
-  let best: string | null = null;
-  let bestM = 0;
-  const visit = (dir: string, d: number): void => {
-    if (d < 0) return;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      // Skip symlinks to avoid following loops or escaping the watched tree.
-      if (!e.isDirectory() || e.isSymbolicLink()) continue;
-      const p = path.join(dir, e.name);
-      if (e.name.startsWith('wf_') && path.basename(dir) === 'workflows') {
-        let m: number;
-        try {
-          m = fs.statSync(p).mtimeMs;
-        } catch {
-          /* c8 ignore next */ // TOCTOU: dir existed at readdirSync but is gone/inaccessible by statSync
-          continue;
-        }
-        if (m > bestM) {
-          bestM = m;
-          best = p;
-        }
-      } else if (e.name === 'node_modules' || e.name === 'vendor') {
-        continue;
-      } else {
-        visit(p, d - 1);
-      }
-    }
-  };
-  visit(base, depth);
-  return best;
+  const runs = walkWfDirs(base, depth);
+  if (runs.length === 0) return null;
+  // Pick the entry with the highest mtime.
+  // runs[0] is guaranteed non-undefined here because runs.length > 0,
+  // but TypeScript's strict index signature cannot narrow it from the length
+  // check alone. Use a reduce to keep the narrowing airtight.
+  const best = runs.reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a));
+  return best.dir;
 }

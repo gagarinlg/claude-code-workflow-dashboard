@@ -81,7 +81,7 @@ per-agent output.
 
 ## Derived agent status
 
-For each agent, with `STALE_SECS = 90`:
+For each agent, with `STALE_SECS = 180`:
 
 - **done** — a `result` exists in the journal.
 - **run** (live) — no result, transcript mtime within the last 90 s.
@@ -98,10 +98,12 @@ For each agent, with `STALE_SECS = 90`:
   "workflowDir": "<abs path>",   // NOTE: stripped by safeSnap() before webview delivery — present in the host's SnapshotOk type but absent from every message the webview receives.
   "updatedAt": "<localized time>",
   "loop": { "phase", "live", "done", "dead", "total", "outTok", "tools",
-            "passes", "findings", "sevTotals": { "HIGH": 2, ... } },
+            "passes", "findings", "sevTotals": { "HIGH": 2, ... },
+            "superseded": 0 },          // count of superseded agents (excluded from dead count); M3 field
   "labels": ["Review", "Verify", ...],          // distinct reviewer labels
   "agents": [ { "id", "label", "key", "status", "elapsed", "tokens", "tools",
                "tail", "lastActivity", "start", "mtime", "idx",
+               "superseded?",          // boolean (M3): true when this agent was superseded by a later same-key agent
                "findings?"|"result?"|"resultText?", "verdict?" } ],
   "allFindings": [ { "pass", "reviewer", "key", ...finding } ],
   "structuredResults": [ { "pass", "label", "key", "result" } ],
