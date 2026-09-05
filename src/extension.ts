@@ -337,9 +337,13 @@ function openEditorPanel(): void {
     // localResourceRoots: [] — all resources are inlined; no local file access needed.
     { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] },
   );
-  attachWebview(editorPanel.webview, panelDisposables);
+  // WebviewPanel.webview is guarded by assertNotDisposed(), so reading it inside
+  // onDidDispose throws and aborts the cleanup, leaving editorPanel pointing at a
+  // disposed panel. Capture it while the panel is alive.
+  const panelWebview = editorPanel.webview;
+  attachWebview(panelWebview, panelDisposables);
   editorPanel.onDidDispose(() => {
-    if (editorPanel) webviews.delete(editorPanel.webview);
+    webviews.delete(panelWebview);
     editorPanel = null;
     panelDisposables.forEach((d) => d.dispose());
   });
