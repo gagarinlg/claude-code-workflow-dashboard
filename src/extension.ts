@@ -181,9 +181,13 @@ class DashboardViewProvider implements vscode.WebviewViewProvider {
     // directly onto ctx.subscriptions leaks one disposable per resolveWebviewView()
     // call because ctx.subscriptions is only drained at extension deactivation.
     const viewDisposables: vscode.Disposable[] = [];
-    attachWebview(view.webview, viewDisposables, 'sidebar');
+    // "Trying to use the view after it has been disposed throws an exception"
+    // (vscode.d.ts). The current implementation happens not to throw here, but
+    // capturing keeps the cleanup off that undocumented behaviour.
+    const viewWebview = view.webview;
+    attachWebview(viewWebview, viewDisposables, 'sidebar');
     view.onDidDispose(() => {
-      webviews.delete(view.webview);
+      webviews.delete(viewWebview);
       viewDisposables.forEach((d) => d.dispose());
     });
     if (!latest) refresh();
