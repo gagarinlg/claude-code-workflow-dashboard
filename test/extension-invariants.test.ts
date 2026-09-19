@@ -202,6 +202,65 @@ describe('extension.ts — FSWatcher cleanup on re-activation (HIGH finding fix)
 });
 
 // ---------------------------------------------------------------------------
+// AC: the dashboard panel can be reopened after it has been closed.
+// vscode.WebviewPanel.webview is a getter guarded by assertNotDisposed(), so
+// reading it inside onDidDispose throws 'Webview is disposed'. The throw aborts
+// the rest of the handler, editorPanel is never reset to null, and every later
+// openEditorPanel() call hits the reveal() early-return and throws again --
+// the panel becomes impossible to reopen until the window is reloaded.
+// The sidebar view is written the same way; its getter has no guard today, so
+// that one is not a live bug, but the declared contract says not to rely on it.
+// ---------------------------------------------------------------------------
+describe('extension.ts - dispose handlers never read a webview getter', () => {
+  let openSection: string;
+  let viewSection: string;
+
+  beforeAll(() => {
+    const extSrc = readRoot('src/extension.ts');
+    openSection = extSrc.slice(
+      extSrc.indexOf('function openEditorPanel('),
+      extSrc.indexOf('export function activate('),
+    );
+    viewSection = extSrc.slice(
+      extSrc.indexOf('resolveWebviewView('),
+      extSrc.indexOf('async function runSelectRun('),
+    );
+  });
+
+  it("openEditorPanel's onDidDispose handler does not read .webview", () => {
+    // WebviewPanel.webview is guarded by assertNotDisposed(): reading it inside
+    // the handler throws, the cleanup is abandoned, editorPanel keeps pointing at
+    // the disposed panel, and the dashboard can no longer be reopened.
+    const handler = openSection.slice(openSection.indexOf('onDidDispose('));
+    expect(handler).not.toContain('.webview');
+  });
+
+  it("resolveWebviewView's onDidDispose handler does not read .webview", () => {
+    // "Trying to use the view after it has been disposed throws an exception"
+    // (vscode.d.ts). The view getter has no such guard today, so this one is not a
+    // live bug -- the point is not to depend on that.
+    const handler = viewSection.slice(viewSection.indexOf('onDidDispose('));
+    expect(handler).not.toContain('.webview');
+  });
+
+  it('openEditorPanel captures the panel webview before registering onDidDispose', () => {
+    // Order is the invariant, not the number of reads: the capture has to happen
+    // while the panel is still alive.
+    const read = openSection.indexOf('editorPanel.webview');
+    expect(read).toBeGreaterThan(-1);
+    expect(read).toBeLessThan(openSection.indexOf('onDidDispose('));
+  });
+
+  it('the panel dispose handler still clears editorPanel and unregisters the webview', () => {
+    // A guard, not a regression witness: both strings are present in the broken
+    // version too, where the throw simply kept them from running.
+    const handler = openSection.slice(openSection.indexOf('onDidDispose('));
+    expect(handler).toContain('webviews.delete(');
+    expect(handler).toContain('editorPanel = null');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // AC: safeSnap strips workflowDir from webview payload (information disclosure)
 // (CLAUDE.md: sanitize transcript-derived data before webview injection)
 // ---------------------------------------------------------------------------

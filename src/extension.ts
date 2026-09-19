@@ -181,9 +181,13 @@ class DashboardViewProvider implements vscode.WebviewViewProvider {
     // directly onto ctx.subscriptions leaks one disposable per resolveWebviewView()
     // call because ctx.subscriptions is only drained at extension deactivation.
     const viewDisposables: vscode.Disposable[] = [];
-    attachWebview(view.webview, viewDisposables, 'sidebar');
+    // "Trying to use the view after it has been disposed throws an exception"
+    // (vscode.d.ts). The current implementation happens not to throw here, but
+    // capturing keeps the cleanup off that undocumented behaviour.
+    const viewWebview = view.webview;
+    attachWebview(viewWebview, viewDisposables, 'sidebar');
     view.onDidDispose(() => {
-      webviews.delete(view.webview);
+      webviews.delete(viewWebview);
       viewDisposables.forEach((d) => d.dispose());
     });
     if (!latest) refresh();
@@ -337,9 +341,13 @@ function openEditorPanel(): void {
     // localResourceRoots: [] — all resources are inlined; no local file access needed.
     { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] },
   );
-  attachWebview(editorPanel.webview, panelDisposables);
+  // WebviewPanel.webview is guarded by assertNotDisposed(), so reading it inside
+  // onDidDispose throws and aborts the cleanup, leaving editorPanel pointing at a
+  // disposed panel. Capture it while the panel is alive.
+  const panelWebview = editorPanel.webview;
+  attachWebview(panelWebview, panelDisposables);
   editorPanel.onDidDispose(() => {
-    if (editorPanel) webviews.delete(editorPanel.webview);
+    webviews.delete(panelWebview);
     editorPanel = null;
     panelDisposables.forEach((d) => d.dispose());
   });

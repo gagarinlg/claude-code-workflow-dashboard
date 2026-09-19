@@ -1,5 +1,14 @@
 # Change Log
 
+## [Unreleased]
+
+### Fixed
+
+- **The dashboard panel can be reopened after it has been closed.** Its
+  `onDidDispose` handler read the panel's `webview` getter, which throws once
+  the panel is disposed — so the cleanup never cleared the stored panel and
+  every later **Open** failed until the window was reloaded.
+
 ## [1.0.0] — 2026-06-29 — M3 + M4 launch
 
 ### M3-Timeline — Gantt visualization
