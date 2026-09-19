@@ -2,7 +2,7 @@
   "name": "claude-code-workflow-dashboard",
   "displayName": "Claude Code Workflow Dashboard",
   "description": "Live dashboard for Claude Code workflow runs — loop & agent overview, per-agent output, and review findings, updated in real time. Unofficial community tool, not affiliated with Anthropic.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "malte-langermann",
   "author": {
     "name": "Malte Langermann",
@@ -23,7 +23,7 @@
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "make-fixture": "node scripts/make-sample-run.mjs",
-    "prescreenshots": "node -e \"require('playwright')\" 2>/dev/null && node -e \"const {chromium}=require('playwright');chromium.executablePath()&&process.exit(0);process.exit(1)\" 2>/dev/null || (echo 'Playwright Chromium not installed. Run: npx playwright install chromium' && exit 1)",
+    "prescreenshots": "node -e \"require('playwright')\" 2>/dev/null && node -e \"const {chromium}=require('playwright');chromium.executablePath()&&process.exit(0);process.exit(1)\" 2>/dev/null || npm i -D playwright@^1.61.1",
     "screenshots": "node scripts/screenshot.mjs"
   },
   "devDependencies": {
@@ -177,7 +177,7 @@
           "type": "number",
           "default": 4000,
           "minimum": 1000,
-          "description": "Fallback polling interval in milliseconds (minimum 1000). Changes take effect on the next polling tick — no reload needed. The dashboard also refreshes immediately on file-system changes."
+          "description": "Fallback polling interval in milliseconds (minimum 1000). Changes take effect on the next polling tick — no reload needed. The dashboard also refreshes immediately on file changes."
         },
         "claudeWorkflow.statusBar": {
           "type": "boolean",
@@ -187,7 +187,7 @@
         "claudeWorkflow.roleRules": {
           "type": "array",
           "default": [],
-          "markdownDescription": "Optional rules to label agents per workflow: an array of `{ \"re\": \"<regex>\", \"label\": \"<name>\", \"key\": \"<id>\" }`. Each rule matches against an agent's first prompt. Without rules, labels are derived automatically from each prompt (\"You are a …\").",
+          "markdownDescription": "Optional rules to label agents per workflow: an array of `{ \"re\": \"<regex>\", \"label\": \"<name>\", \"key\": \"<id>\" }`. Each rule matches against an agent's opening prompt.",
           "items": {
             "type": "object",
             "properties": {
