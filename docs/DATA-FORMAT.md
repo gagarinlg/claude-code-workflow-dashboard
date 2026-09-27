@@ -58,6 +58,17 @@ An agent is **done** iff a `result` record exists for its id.
 > adding the Markdown export (M2): export findings, verdicts, structured results,
 > and per-agent metrics.
 
+## How the files are read
+
+`journal.jsonl` and every `agent-<id>.jsonl` are **append-only** JSONL: Claude
+Code writes whole lines terminated by `\n` and never rewrites earlier lines. The
+extension relies on this to read them incrementally (`src/data/incremental.ts`):
+it remembers the byte offset after the last complete line of each file and, on
+the next refresh, parses only what was appended. A file that shrank, was replaced
+(new inode), or no longer has a `\n` just before the remembered offset is read
+again from the start. A last line without its `\n` yet is parsed tentatively (it
+counts if it is already valid JSON) and re-read once complete.
+
 ## `agent-<id>.jsonl` transcript events
 
 JSONL of turn objects. Fields the extension uses:

@@ -25,7 +25,9 @@ export interface RecentRun {
 // Skips node_modules, vendor, and hidden directories — mirrors changed.ts:53
 // and the existing findWorkflowDir pattern (no wf_* dirs live inside them).
 // ---------------------------------------------------------------------------
-function walkWfDirs(base: string, depth = 5): RecentRun[] {
+// countAgents=false leaves agentCount at 0 and saves one readdirSync per run;
+// findWorkflowDir() only needs the mtimes.
+function walkWfDirs(base: string, depth = 5, countAgents = true): RecentRun[] {
   const runs: RecentRun[] = [];
   const visit = (dir: string, d: number): void => {
     if (d < 0) return;
@@ -52,7 +54,7 @@ function walkWfDirs(base: string, depth = 5): RecentRun[] {
         // everywhere else in the codebase (snapshot.ts, changed.ts).
         let agentCount = 0;
         try {
-          agentCount = fs.readdirSync(p, { withFileTypes: true }).filter(
+          if (countAgents) agentCount = fs.readdirSync(p, { withFileTypes: true }).filter(
             (e) => !e.isSymbolicLink() && e.isFile() && e.name.startsWith('agent-') && e.name.endsWith('.jsonl'),
           ).length;
         } catch {
@@ -109,7 +111,7 @@ export function formatRelativeTime(mtimeMs: number, nowMs: number = Date.now()):
 // with a snapshot build, but the overhead is bounded by depth=5 directory traversal and
 // is acceptable at 4-second polling intervals. This is logged as a tech-debt item in ROADMAP.md.
 export function findWorkflowDir(base: string, depth = 5): string | null {
-  const runs = walkWfDirs(base, depth);
+  const runs = walkWfDirs(base, depth, false);
   if (runs.length === 0) return null;
   // Pick the entry with the highest mtime.
   // runs[0] is guaranteed non-undefined here because runs.length > 0,

@@ -84,11 +84,12 @@ export interface ClassifyResult {
 
 // Maximum file size in bytes that jload() will read. Files larger than this are
 // skipped and treated as empty (returns []). Prevents blocking the Extension Host
-// event loop on a runaway transcript that grows to hundreds of megabytes.
-// 10 MB is generous for any realistic workflow run; adjust in settings if needed.
+// event loop on a runaway file that grows to hundreds of megabytes.
+// buildSnapshot() does not use jload(): it follows the run's files incrementally
+// (incremental.ts), which bounds each read by a byte budget instead.
 export const MAX_JSONL_BYTES = 10 * 1024 * 1024; // 10 MiB
 
-// Tolerant JSONL parser — skips blank lines and partial trailing lines.
+// Tolerant one-shot JSONL parser — skips blank lines and partial trailing lines.
 export function jload(p: string): unknown[] {
   const out: unknown[] = [];
   let data: string;
@@ -119,23 +120,33 @@ export function jload(p: string): unknown[] {
 
 export function firstUserText(events: unknown[]): string {
   for (const o of events) {
-    if (o == null || typeof o !== 'object') continue;
-    const obj = o as Record<string, unknown>;
-    if (obj['type'] === 'user') {
-      const m = obj['message'] as Record<string, unknown> | undefined;
-      const c = m && m['content'];
-      if (typeof c === 'string') return c;
-      if (Array.isArray(c)) {
-        for (const b of c) {
-          if (b && typeof b === 'object') {
-            const block = b as Record<string, unknown>;
-            if (block['type'] === 'text') return (block['text'] as string) || '';
-          }
-        }
+    const t = userEventText(o);
+    if (t !== undefined) return t;
+  }
+  return '';
+}
+
+// The prompt text carried by one transcript event, or undefined when the event
+// is not a user turn with text (e.g. a user turn holding only tool_result blocks).
+// firstUserText() returns the first defined value; the incremental reader
+// (TRANSCRIPT_OPS in incremental.ts) folds events one at a time with the same
+// helper, so both paths agree on which event supplies the prompt.
+export function userEventText(o: unknown): string | undefined {
+  if (o == null || typeof o !== 'object') return undefined;
+  const obj = o as Record<string, unknown>;
+  if (obj['type'] !== 'user') return undefined;
+  const m = obj['message'] as Record<string, unknown> | undefined;
+  const c = m && m['content'];
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) {
+    for (const b of c) {
+      if (b && typeof b === 'object') {
+        const block = b as Record<string, unknown>;
+        if (block['type'] === 'text') return (block['text'] as string) || '';
       }
     }
   }
-  return '';
+  return undefined;
 }
 
 export function deriveLabel(text: string): string {
@@ -222,57 +233,71 @@ export function classify(text: string, roleRules: RoleRule[]): ClassifyResult {
   return { label: lbl, key: lbl.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 24) };
 }
 
-export function agentStats(events: unknown[]): AgentStats {
-  let outTok = 0;
-  let tools = 0;
-  const tail: TailEntry[] = [];
-  // Optional token fields — only accumulated when the field is present in at
-  // least one usage record. Using undefined-accumulation (not 0) ensures that
-  // an agent whose transcript has no input_tokens field never reports 0 as if
-  // it were a real measurement. The first numeric occurrence initialises the
-  // accumulator; subsequent ones add to it.
-  let inTok: number | undefined;
-  let cacheCreate: number | undefined;
-  let cacheRead: number | undefined;
+// Number of most-recent activity entries kept per agent.
+export const TAIL_LEN = 30;
 
-  for (const o of events) {
-    if (o == null || typeof o !== 'object') continue;
-    const obj = o as Record<string, unknown>;
-    if (obj['type'] !== 'assistant') continue;
-    const m = obj['message'];
-    if (!m || typeof m !== 'object') continue;
-    const msg = m as Record<string, unknown>;
-    const usage = msg['usage'];
-    if (usage && typeof usage === 'object') {
-      const u = usage as Record<string, unknown>;
-      if (typeof u['output_tokens'] === 'number') outTok += u['output_tokens'] as number;
-      // Optional fields: guard typeof strictly — absent fields must stay undefined.
-      if (typeof u['input_tokens'] === 'number') inTok = (inTok ?? 0) + (u['input_tokens'] as number);
-      if (typeof u['cache_creation_input_tokens'] === 'number') cacheCreate = (cacheCreate ?? 0) + (u['cache_creation_input_tokens'] as number);
-      if (typeof u['cache_read_input_tokens'] === 'number') cacheRead = (cacheRead ?? 0) + (u['cache_read_input_tokens'] as number);
-    }
-    const content = msg['content'];
-    for (const b of Array.isArray(content) ? content : []) {
-      if (!b || typeof b !== 'object') continue;
-      const block = b as Record<string, unknown>;
-      if (block['type'] === 'tool_use') {
-        tools++;
-        let inp = '';
-        try {
-          inp = JSON.stringify(block['input']).slice(0, 180);
-        } catch {}
-        const toolName = typeof block['name'] === 'string' ? block['name'] : '(unknown)';
-        tail.push({ kind: 'tool', text: `[${toolName}] ${inp}` });
-      } else if (block['type'] === 'text' && (typeof block['text'] === 'string') && (block['text'] as string).trim()) {
-        tail.push({ kind: 'text', text: (block['text'] as string).trim() });
-      }
+export function agentStats(events: unknown[]): AgentStats {
+  const acc = newAgentStats();
+  for (const o of events) foldAgentStats(acc, o);
+  return acc;
+}
+
+// Running accumulator for agentStats(). The incremental transcript reader keeps
+// one per agent and folds only newly appended events into it, so a refresh does
+// not re-parse the whole transcript. The accumulator is itself a valid AgentStats
+// at every step (tail never grows beyond TAIL_LEN).
+export function newAgentStats(): AgentStats {
+  return { outTok: 0, tools: 0, tail: [] };
+}
+
+// Fold one transcript event into acc (mutates acc).
+export function foldAgentStats(acc: AgentStats, o: unknown): void {
+  if (o == null || typeof o !== 'object') return;
+  const obj = o as Record<string, unknown>;
+  if (obj['type'] !== 'assistant') return;
+  const m = obj['message'];
+  if (!m || typeof m !== 'object') return;
+  const msg = m as Record<string, unknown>;
+  const usage = msg['usage'];
+  if (usage && typeof usage === 'object') {
+    const u = usage as Record<string, unknown>;
+    if (typeof u['output_tokens'] === 'number') acc.outTok += u['output_tokens'] as number;
+    // Optional token fields — only accumulated when the field is present in at
+    // least one usage record. Using undefined-accumulation (not 0) ensures that
+    // an agent whose transcript has no input_tokens field never reports 0 as if
+    // it were a real measurement. The first numeric occurrence initialises the
+    // accumulator; subsequent ones add to it.
+    if (typeof u['input_tokens'] === 'number') acc.inTok = (acc.inTok ?? 0) + (u['input_tokens'] as number);
+    if (typeof u['cache_creation_input_tokens'] === 'number') acc.cacheCreate = (acc.cacheCreate ?? 0) + (u['cache_creation_input_tokens'] as number);
+    if (typeof u['cache_read_input_tokens'] === 'number') acc.cacheRead = (acc.cacheRead ?? 0) + (u['cache_read_input_tokens'] as number);
+  }
+  const content = msg['content'];
+  for (const b of Array.isArray(content) ? content : []) {
+    if (!b || typeof b !== 'object') continue;
+    const block = b as Record<string, unknown>;
+    if (block['type'] === 'tool_use') {
+      acc.tools++;
+      let inp = '';
+      try {
+        inp = JSON.stringify(block['input']).slice(0, 180);
+      } catch {}
+      const toolName = typeof block['name'] === 'string' ? block['name'] : '(unknown)';
+      pushTail(acc.tail, { kind: 'tool', text: `[${toolName}] ${inp}` });
+    } else if (block['type'] === 'text' && (typeof block['text'] === 'string') && (block['text'] as string).trim()) {
+      pushTail(acc.tail, { kind: 'text', text: (block['text'] as string).trim() });
     }
   }
-  const result: AgentStats = { outTok, tools, tail: tail.slice(-30) };
-  if (inTok !== undefined) result.inTok = inTok;
-  if (cacheCreate !== undefined) result.cacheCreate = cacheCreate;
-  if (cacheRead !== undefined) result.cacheRead = cacheRead;
-  return result;
+}
+
+function pushTail(tail: TailEntry[], e: TailEntry): void {
+  tail.push(e);
+  if (tail.length > TAIL_LEN) tail.shift();
+}
+
+// Independent copy of acc, so a tentative event can be folded in without
+// touching the committed accumulator.
+export function cloneAgentStats(acc: AgentStats): AgentStats {
+  return { ...acc, tail: acc.tail.slice() };
 }
 
 export function sevCounts(findings: unknown[]): Record<string, number> {

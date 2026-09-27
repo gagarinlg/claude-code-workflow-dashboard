@@ -1,9 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { findWorkflowDir } from './discovery';
-import { jload, firstUserText, classify, agentStats, sevCounts, agentTypeToLabel, STALE_SECS } from './parse';
+import { classify, sevCounts, agentTypeToLabel, STALE_SECS } from './parse';
 import type { RoleRule, TailEntry } from './parse';
 import { walkChanged } from './changed';
+import { JsonlFollower, JOURNAL_OPS, TRANSCRIPT_OPS, newBudget } from './incremental';
+import type { TranscriptAcc } from './incremental';
 
 // Re-export so callers that import from snapshot.ts get the canonical types.
 export type { RoleRule, TailEntry } from './parse';
@@ -164,12 +166,92 @@ export type SnapshotErr = {
 
 export type Snapshot = SnapshotOk | SnapshotErr;
 
+// --- Incremental state carried between builds ---
+
+interface ResolvedRun {
+  base: string;
+  pinnedDir: string | undefined;
+  wfDir: string;
+  isPinned: boolean;
+}
+
+// The followed files of one run directory.
+export interface RunFiles {
+  journal: JsonlFollower<unknown[]>;
+  /** By transcript file name. */
+  transcripts: Map<string, JsonlFollower<TranscriptAcc>>;
+  /** By meta.json path. */
+  metas: Map<string, { size: number; mtimeMs: number; agentType: unknown }>;
+}
+
+// Runs whose followed-file state is kept. Two workflow runs active at once make
+// discovery alternate between them; keeping both avoids re-reading each on every switch.
+export const MAX_FOLLOWED_RUNS = 3;
+
+// What a build keeps for the next one, so a refresh costs roughly the bytes
+// appended since the previous refresh instead of the size of the whole run.
+// The extension host holds one for its lifetime; buildSnapshot(cfg) without a
+// cache uses a throwaway one and reads everything, as before.
+export class SnapshotCache {
+  /** Run directory resolved by the last build; reused when discovery is skipped. */
+  run: ResolvedRun | null = null;
+  /** Result of the last repo walk; reused when the walk is skipped. */
+  changed: { repo: string; files: string[] | null } | null = null;
+  /** Followed files per run directory, least recently used first. */
+  readonly runs = new Map<string, RunFiles>();
+  /** True when the last build ran out of byte budget; build again to finish. Its snapshot is partial. */
+  pending = false;
+  /** Journal and transcript bytes read by the last build. */
+  bytesRead = 0;
+
+  /** The followed files of wfDir, created on first use; marks wfDir most recently used. */
+  files(wfDir: string): RunFiles {
+    let r = this.runs.get(wfDir);
+    if (r) {
+      this.runs.delete(wfDir);
+    } else {
+      r = { journal: new JsonlFollower(JOURNAL_OPS), transcripts: new Map(), metas: new Map() };
+    }
+    this.runs.set(wfDir, r);
+    for (const dir of this.runs.keys()) {
+      if (this.runs.size <= MAX_FOLLOWED_RUNS) break;
+      this.runs.delete(dir);
+    }
+    return r;
+  }
+
+  clear(): void {
+    this.run = null;
+    this.changed = null;
+    this.runs.clear();
+    this.pending = false;
+    this.bytesRead = 0;
+  }
+}
+
+export interface SnapshotOptions {
+  /** State from previous builds. Omit to read everything from scratch. */
+  cache?: SnapshotCache;
+  /** Re-run run discovery. When false, the cache's run directory is reused while it
+   *  exists and cfg.base / cfg.pinnedDir are unchanged. Default true. */
+  discover?: boolean;
+  /** Walk cfg.repo for recently changed files. When false, the cache's last list for
+   *  the same repo is reused (null if there is none). Default true. */
+  walkRepo?: boolean;
+  /** Bytes this build may read. When they run out, cache.pending is set and the
+   *  snapshot is partial. Default: unlimited. */
+  byteBudget?: number;
+}
+
 // --- buildSnapshot ---
 
-export function buildSnapshot(cfg: Cfg): Snapshot {
+export function buildSnapshot(cfg: Cfg, opts: SnapshotOptions = {}): Snapshot {
   try {
-    return _buildSnapshotUnsafe(cfg);
+    return _buildSnapshotUnsafe(cfg, opts);
   } catch (err) {
+    // An error is final for this build: the caller must not keep re-building a
+    // snapshot that throws on every attempt.
+    if (opts.cache) opts.cache.pending = false;
     // Belt-and-suspenders: if any unexpected error escapes the inner guards,
     // degrade to {ok:false} rather than propagating an exception to the UI.
     // This path requires a genuine unguarded throw inside _buildSnapshotUnsafe —
@@ -229,7 +311,47 @@ function _resolveWfDir(cfg: Cfg): { wfDir: string; isPinned: boolean } | { err: 
   return { wfDir, isPinned: false };
 }
 
-function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
+// _resolveWfDir, or the cache's previous answer when discovery is skipped. Walking
+// cfg.base visits every run of every project, so the host does it on poll ticks
+// only, not on each file-change event inside the current run.
+function _resolveRun(cfg: Cfg, cache: SnapshotCache, discover: boolean): { wfDir: string; isPinned: boolean } | { err: string } {
+  const r = cache.run;
+  if (!discover && r && r.base === cfg.base && r.pinnedDir === cfg.pinnedDir) {
+    let isDir = false;
+    try { isDir = fs.statSync(r.wfDir).isDirectory(); } catch {}
+    if (isDir) return r;
+  }
+  const resolved = _resolveWfDir(cfg);
+  cache.run = 'err' in resolved ? null : { base: cfg.base, pinnedDir: cfg.pinnedDir, ...resolved };
+  return resolved;
+}
+
+// agentType from agent-<id>.meta.json, re-read only when the file's size or mtime
+// changes. Files over MAX_META_BYTES or not valid JSON yield undefined, so the
+// label falls back to classify().
+function _metaAgentType(run: RunFiles, metaP: string, st: fs.Stats): unknown {
+  const hit = run.metas.get(metaP);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.agentType;
+  let agentType: unknown = undefined;
+  // Size-guard: skip the content read when meta.json exceeds MAX_META_BYTES
+  // to avoid blocking the Extension Host event loop on a crafted large file.
+  try {
+    if (st.size <= MAX_META_BYTES) {
+      const parsed = JSON.parse(fs.readFileSync(metaP, 'utf8')) as Record<string, unknown>;
+      agentType = parsed['agentType'];
+    }
+  } catch {
+    // meta.json unreadable or not valid JSON — agentType stays undefined,
+    // classify() fallback will be used.
+  }
+  run.metas.set(metaP, { size: st.size, mtimeMs: st.mtimeMs, agentType });
+  return agentType;
+}
+
+function _buildSnapshotUnsafe(cfg: Cfg, opts: SnapshotOptions): Snapshot {
+  const cache = opts.cache ?? new SnapshotCache();
+  cache.pending = false;
+  cache.bytesRead = 0;
   // When a run is pinned, use it directly; otherwise search for the newest.
   // Note: cfg.base (an absolute path) is included in the error message. This is
   // intentional: the user configured the path themselves and seeing it in the
@@ -237,11 +359,14 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
   // from the webview payload (see safeSnap in extension.ts) because workflowDir
   // is derived from an active run and carries more specific path info; the err-path
   // message is a single user-configured string with no additional run-level detail.
-  const resolved = _resolveWfDir(cfg);
+  const resolved = _resolveRun(cfg, cache, opts.discover !== false);
   if ('err' in resolved) return { ok: false, msg: resolved.err };
   const { wfDir, isPinned } = resolved;
+  const run = cache.files(wfDir);
+  const budget = newBudget(opts.byteBudget ?? Infinity);
   const now = Date.now() / 1000;
-  const journal = jload(path.join(wfDir, 'journal.jsonl'));
+  const journal = run.journal.sync(path.join(wfDir, 'journal.jsonl'), budget).acc;
+  if (!run.journal.complete) cache.pending = true;
   const doneIds = new Set(
     journal
       .filter((o) => {
@@ -271,7 +396,8 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
   try {
     // Use withFileTypes to obtain Dirent objects so we can guard against symlinks.
     // A symlink named agent-crafted.jsonl inside a wf_* directory would otherwise be
-    // followed by jload(), potentially reading outside the trusted workflow directory.
+    // followed by the transcript reader, potentially reading outside the trusted
+    // workflow directory.
     // Matching the pattern in changed.ts and discovery.ts: skip any entry that is a
     // symbolic link before checking the name filter.
     rawFiles = fs.readdirSync(wfDir, { withFileTypes: true })
@@ -298,6 +424,7 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
     files = rawFiles;
   }
   const agents: Agent[] = [];
+  const followed = new Set<string>();
   for (const fn of files) {
     const aid = fn.slice('agent-'.length, -'.jsonl'.length);
     // Defense-in-depth: reject empty ids and aids containing path separators or traversal
@@ -307,51 +434,43 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
     // conservatism; real workflow agent ids never contain consecutive dots.
     if (!aid || aid.includes('/') || aid.includes('\\') || aid.includes('..')) continue;
     const fp = path.join(wfDir, fn);
-    const events = jload(fp);
-    if (!events.length) continue;
+    // One stat serves change detection, status and elapsed.
+    let st: fs.Stats;
+    try {
+      st = fs.statSync(fp);
+    } catch {
+      // Transcript disappeared between readdir and stat: skip the agent.
+      continue;
+    }
+    followed.add(fn);
+    let follower = run.transcripts.get(fn);
+    if (!follower) {
+      follower = new JsonlFollower(TRANSCRIPT_OPS);
+      run.transcripts.set(fn, follower);
+    }
+    const { acc: tx, count } = follower.sync(fp, budget, st);
+    if (!follower.complete) cache.pending = true;
+    if (!count) continue;
 
     let start: number;
     const metaP = path.join(wfDir, `agent-${aid}.meta.json`);
     // agentType from meta.json content — the most reliable role signal.
-    // Read the content here (same file we stat for start mtime) so we don't
-    // open it twice. Tolerate any parse failure — fall back to classify().
+    // Tolerate any failure — fall back to classify().
     let metaAgentType: unknown = undefined;
     try {
       const metaSt = fs.statSync(metaP);
       start = metaSt.mtimeMs / 1000;
-      // Best-effort content read for agentType — defensive: never throw.
-      // Size-guard: skip the content read when meta.json exceeds MAX_META_BYTES
-      // to avoid blocking the Extension Host event loop on a crafted large file.
-      // The stat object is reused (no extra syscall) — same mtimeMs, same file.
-      try {
-        if (metaSt.size <= MAX_META_BYTES) {
-          const raw = fs.readFileSync(metaP, 'utf8');
-          const parsed = JSON.parse(raw) as Record<string, unknown>;
-          metaAgentType = parsed['agentType'];
-        }
-      } catch {
-        // meta.json unreadable or not valid JSON — agentType stays undefined,
-        // classify() fallback will be used.
-      }
+      metaAgentType = _metaAgentType(run, metaP, metaSt);
     } catch {
       // meta.json absent — fall back to transcript mtime
-      try {
-        start = fs.statSync(fp).mtimeMs / 1000;
-      /* c8 ignore start */
-      } catch {
-        // TOCTOU: transcript disappeared between readdir and statSync; skip agent.
-        // Untestable without mocking — the race window is sub-millisecond.
-        continue;
-      }
-      /* c8 ignore end */
+      start = st.mtimeMs / 1000;
     }
 
     // Derive label/key: agentType from meta.json is primary; prompt-based
     // classify() + roleRules is the fallback for unknown/missing agentType.
     const fromType = agentTypeToLabel(metaAgentType);
-    // firstUserText is called once; its result is reused for both labelling and
-    // the prompt field so we don't traverse the events array twice.
-    const promptFull = firstUserText(events);
+    // The prompt (firstUserText) is used for both labelling and the prompt field.
+    const promptFull = tx.prompt ?? '';
     const { label, key } = fromType ?? classify(promptFull, cfg.roleRules);
     // cleanType: namespace-stripped agentType string for typed renderer dispatch.
     // Only set when the type was recognised (fromType != null), so the webview
@@ -360,20 +479,13 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
       ? metaAgentType.replace(/^[^:]+:/, '')
       : undefined;
 
-    // transcript mtime for status / elapsed — wrap per same TOCTOU fix
-    let mtime: number;
-    /* c8 ignore start */
-    try {
-      mtime = fs.statSync(fp).mtimeMs / 1000;
-    } catch {
-      // TOCTOU: same race as above — transcript file removed between stat calls.
-      // Untestable without mocking.
-      continue;
-    }
-    /* c8 ignore end */
+    // transcript mtime for status / elapsed
+    const mtime = st.mtimeMs / 1000;
 
     const status: Agent['status'] = doneIds.has(aid) ? 'done' : (now - mtime < STALE_SECS ? 'run' : 'dead');
-    const { outTok, tools, tail, inTok, cacheCreate, cacheRead } = agentStats(events);
+    const { outTok, tools, inTok, cacheCreate, cacheRead } = tx.stats;
+    // Copy: the follower keeps appending to its own tail array on later builds.
+    const tail = tx.stats.tail.slice();
     const res = resultByAgent[aid];
     const a: Agent = {
       id: aid, label, key, status,
@@ -405,6 +517,15 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
     }
     agents.push(a);
   }
+  // Forget files that are gone (or fell outside the MAX_AGENTS cap).
+  for (const fn of run.transcripts.keys()) {
+    if (!followed.has(fn)) run.transcripts.delete(fn);
+  }
+  for (const metaP of run.metas.keys()) {
+    const fn = path.basename(metaP).replace(/\.meta\.json$/, '.jsonl');
+    if (!followed.has(fn)) run.metas.delete(metaP);
+  }
+  cache.bytesRead = budget.bytesRead;
   agents.sort((x, y) => x.start - y.start);
   agents.forEach((a, i) => { a.idx = i + 1; });
 
@@ -561,7 +682,17 @@ function _buildSnapshotUnsafe(cfg: Cfg): Snapshot {
     verdicts,
     verdictLabels,
     isPinned,
-    changed: cfg.repo ? walkChanged(cfg.repo, CHANGED_MAX_SECS) : null,
+    changed: _changed(cfg, cache, opts.walkRepo !== false),
     changedByAgents,
   };
+}
+
+// walkChanged() stats up to WALK_FILE_LIMIT files of the repo, so the host runs it
+// on poll ticks only and reuses the last list in between.
+function _changed(cfg: Cfg, cache: SnapshotCache, walk: boolean): string[] | null {
+  if (!cfg.repo) return null;
+  if (!walk) return cache.changed && cache.changed.repo === cfg.repo ? cache.changed.files : null;
+  const files = walkChanged(cfg.repo, CHANGED_MAX_SECS);
+  cache.changed = { repo: cfg.repo, files };
+  return files;
 }
