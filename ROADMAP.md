@@ -25,6 +25,23 @@ parsing/aggregation layer.
   the UI. Unknown/missing format → friendly empty state.
 - **No rotting data.** Deliberately NO model→price tables (counts + charts only).
 - **Hackable.** Keep the barrier to contribution low even after the TS migration.
+- **A good neighbour on the extension host.** Every extension shares one host thread,
+  Claude Code included. Refresh cost must not grow with run size per file event (#3).
+
+---
+
+## ✅ Post-1.0 — Extension-host load under large runs (#3)  (DONE)
+
+- [x] Coalesce `fs.watch` events: at most one refresh per second, none while no view
+      is visible (`RefreshPacer`, `src/pacer.ts`).
+- [x] Read transcripts and the journal incrementally (`JsonlFollower`,
+      `src/data/incremental.ts`); drop the 10 MiB per-transcript skip.
+- [x] Bound the bytes per build (4 MiB) and continue partial builds after yielding.
+- [x] Run discovery (without per-run agent counting) and the repo walk on poll ticks only.
+- [x] Post snapshots only to visible webviews.
+- [ ] Follow-up: post snapshot deltas instead of the full snapshot. The payload of a
+      large run is several MiB, mostly `result` (sent twice: per agent and in
+      `structuredResults`) and `prompt`.
 
 ---
 

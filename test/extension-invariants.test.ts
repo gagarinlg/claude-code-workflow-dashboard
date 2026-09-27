@@ -202,6 +202,74 @@ describe('extension.ts — FSWatcher cleanup on re-activation (HIGH finding fix)
 });
 
 // ---------------------------------------------------------------------------
+// AC: refreshes are paced so a workflow run cannot starve the shared extension
+// host (issue #3). The pacing itself is unit-tested in pacer.test.ts; these
+// checks pin how extension.ts wires it up.
+// ---------------------------------------------------------------------------
+describe('extension.ts — refresh pacing (issue #3)', () => {
+  let extSrc: string;
+
+  beforeAll(() => {
+    extSrc = readRoot('src/extension.ts');
+  });
+
+  it('the fs.watch callback goes through the pacer and only while a view is visible', () => {
+    expect(extSrc).toContain('fs.watch(dir, () => { if (anyVisible()) pacer.changed(); })');
+  });
+
+  it('refresh() is only ever called by the pacer', () => {
+    const code = extSrc.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    const calls = [...code.matchAll(/\brefresh\(/g)].length;
+    // The declaration and the pacer's callback.
+    expect(calls).toBe(2);
+    expect(extSrc).toContain('new RefreshPacer((rescan) => refresh(rescan))');
+  });
+
+  it('refresh() builds incrementally with a byte budget and continues a partial build', () => {
+    const fn = extSrc.slice(extSrc.indexOf('function refresh('), extSrc.indexOf('function attachWebview('));
+    expect(fn).toContain('cache: snapCache');
+    expect(fn).toContain('byteBudget: SLICE_BYTES');
+    // Discovery and the repo walk only on rescans (poll ticks, explicit requests).
+    expect(fn).toContain('discover: rescan');
+    expect(fn).toContain('walkRepo: rescan');
+    expect(fn).toMatch(/if \(snapCache\.pending\) \{[\s\S]*pacer\.request\(0, false\);[\s\S]*return;/);
+  });
+
+  it('the poll tick requests a rescan', () => {
+    expect(extSrc).toContain('pacer.request(0, true); schedulePoll();');
+  });
+
+  it('an explicit refresh re-reads the run from scratch', () => {
+    const fn = extSrc.slice(extSrc.indexOf('function hardRefresh('), extSrc.indexOf('function manageWatch('));
+    expect(fn).toContain('snapCache.clear()');
+    expect(fn).toContain('pacer.request(0, true)');
+  });
+
+  it('snapshots are posted only to visible webviews', () => {
+    const fn = extSrc.slice(extSrc.indexOf('function pushToVisible('), extSrc.indexOf('function anyVisible('));
+    expect(fn).toContain('if (!isVisible()) continue;');
+  });
+
+  it('a view that becomes visible triggers a refresh', () => {
+    expect(extSrc).toContain('view.onDidChangeVisibility(');
+    expect(extSrc).toContain('panel.onDidChangeViewState(');
+    expect((extSrc.match(/onBecameVisible\(\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("activate()'s reset block cancels a queued refresh and clears the cache", () => {
+    const start = extSrc.indexOf('export function activate(');
+    const resetBlock = extSrc.slice(start, extSrc.indexOf('context.subscriptions.push(', start));
+    expect(resetBlock).toContain('pacer.cancel()');
+    expect(resetBlock).toContain('snapCache.clear()');
+  });
+
+  it('deactivate() cancels a queued refresh', () => {
+    const deactivateSection = extSrc.slice(extSrc.indexOf('export function deactivate('));
+    expect(deactivateSection).toContain('pacer.cancel()');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // AC: the dashboard panel can be reopened after it has been closed.
 // vscode.WebviewPanel.webview is a getter guarded by assertNotDisposed(), so
 // reading it inside onDidDispose throws 'Webview is disposed'. The throw aborts
@@ -283,7 +351,7 @@ describe('extension.ts — safeSnap strips workflowDir from webview payload', ()
     expect(extSrc).toContain('_wd');
   });
 
-  it('pushToAll() uses safeSnap before postMessage (both webview paths sanitized)', () => {
+  it('pushToVisible() uses safeSnap before postMessage (both webview paths sanitized)', () => {
     expect(extSrc).toContain('safeSnap(latest)');
   });
 });

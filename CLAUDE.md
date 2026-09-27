@@ -54,9 +54,16 @@ breadth). We differentiate on focus and signal, not surface area.
 
 ```
 src/extension.ts          Activation / host wiring: commands, views, status bar, watcher, timer.
+src/pacer.ts              RefreshPacer: coalesces fs.watch events into at most one refresh per
+                          second and queues partial-build continuations (issue #3).
 src/data/discovery.ts     findWorkflowDir, listRecentRuns, formatRelativeTime.
-src/data/parse.ts         jload, firstUserText, deriveLabel, classify, agentStats, sevCounts.
-src/data/snapshot.ts      buildSnapshot + Snapshot types (mirrors docs/DATA-FORMAT.md).
+src/data/parse.ts         jload, firstUserText, deriveLabel, classify, agentStats, sevCounts,
+                          plus the per-event helpers (userEventText, foldAgentStats) both the
+                          one-shot and the incremental path use.
+src/data/incremental.ts   JsonlFollower: reads an append-only JSONL file incrementally (byte offset,
+                          truncation/replacement detection, byte budget); JOURNAL_OPS/TRANSCRIPT_OPS.
+src/data/snapshot.ts      buildSnapshot + Snapshot types (mirrors docs/DATA-FORMAT.md), SnapshotCache
+                          (incremental state kept between builds) and SnapshotOptions.
                           Includes superseded-agent detection: agents with same agentType+pass,
                           no result, and a newer same-key successor are flagged superseded=true
                           and excluded from the live count.
@@ -75,7 +82,8 @@ src/webview/js-wire.ts    JS_WIRE: wire() — tab bar click + keyboard (WAI-ARIA
 src/export/markdown.ts    generateMarkdown() + buildExportFilename(): Markdown report generator. Pure, no disk I/O.
 dist/extension.js         Bundled output (esbuild, CommonJS). Shipped in VSIX; not in source control.
 build.mjs                 esbuild build script (production + --watch mode).
-vitest.config.ts          Vitest config; 90 % coverage gate on src/data/**, src/webview/**, and src/export/**.
+vitest.config.ts          Vitest config; 90 % coverage gate on src/data/**, src/webview/**, src/export/**,
+                          and src/pacer.ts.
 eslint.config.mjs         ESLint flat config (typescript-eslint).
 tsconfig.json             TypeScript strict config.
 scripts/typecheck.mjs     tsc --noEmit wrapper (TS18003 suppression is a now-dormant safety net; src/ always exists post-M0).
@@ -84,9 +92,10 @@ test/                     Vitest unit tests (*.test.ts) + fixtures/ (wf_basic, w
                           erika-m2-polish-verification, erika-m2-verification, erika-m3-layout-verification,
                           erika-m3m4-addl-verification, erika-m3m4-verification, extension-invariants, html,
                           html-syntax, m0-acceptance, m1-pinned-run, m2-agent-fold, m2-charts, m2-export,
-                          m2-metrics, m2-typed-results, m2-typed-results-generic, m3-depgraph, m3-timeline,
-                          m4-community, m4-readme, m4-screenshots, parse, snapshot, snapshot-toctou.
-                          **Review scope note**: all 29 test files must be included in every review round.
+                          incremental, incremental-faults, m2-metrics, m2-typed-results,
+                          m2-typed-results-generic, m3-depgraph, m3-timeline, m4-community, m4-readme,
+                          m4-screenshots, pacer, parse, snapshot, snapshot-cache, snapshot-toctou.
+                          **Review scope note**: all 33 test files must be included in every review round.
                           extension-invariants.test.ts in particular covers FSWatcher cleanup on re-activation,
                           safeSnap workflowDir stripping, GPL-3.0-or-later license, command-id constraints,
                           and coverage gates — do not omit it from review scope.
@@ -133,7 +142,14 @@ PUBLISHING.md             LOCAL-ONLY release runbook — gitignored, never commi
   base, stats each, counts agent files, returns sorted newest-first. Used by the run
   picker (`runSelectRun` in `extension.ts`). `formatRelativeTime(mtimeMs)` formats an
   mtime as a human-readable relative string (`"3s ago"`, `"5m ago"`, etc.).
-- `jload(p)` (`src/data/parse.ts`) — tolerant JSONL parse (skips blank/partial trailing lines); files larger than 10 MiB (`MAX_JSONL_BYTES`) are skipped entirely to prevent blocking the Extension Host event loop.
+- `jload(p)` (`src/data/parse.ts`) — tolerant one-shot JSONL parse (skips blank/partial trailing lines); files larger than 10 MiB (`MAX_JSONL_BYTES`) are skipped entirely. `buildSnapshot` does not use it (see `JsonlFollower`).
+- `JsonlFollower` (`src/data/incremental.ts`) — follows one append-only JSONL file:
+  keeps the byte offset after the last complete line and folds only newly appended
+  lines into an accumulator (`TRANSCRIPT_OPS` = running `agentStats` + first prompt;
+  `JOURNAL_OPS` = all records). Starts over when the file shrank, was replaced (new
+  inode) or rewritten in place. Reads stop at a shared `ReadBudget`; `complete` is
+  false while bytes remain. Its output must stay identical to a one-shot `jload` +
+  `agentStats` + `firstUserText` of the same bytes (tested in `incremental.test.ts`).
 - `classify()` / `deriveLabel()` (`src/data/parse.ts`) — turn an agent's first user
   prompt into a role label. `DEFAULT_ROLE_RULES` is a neutral generic set covering
   review/fix/verify/plan/research/judge/synthesize vocabulary. `agentType` from
@@ -152,19 +168,34 @@ PUBLISHING.md             LOCAL-ONLY release runbook — gitignored, never commi
   `safeSnap()` before webview delivery; `verdictLabels` maps agentType keys to display
   labels; `isPinned` reflects whether a pinned run dir is in use;
   `changedByAgents` unions `filesChanged[]` from every agent's structured result.)
+  `buildSnapshot(cfg, { cache, discover, walkRepo, byteBudget })`: with a
+  `SnapshotCache` it reads only what changed since the previous build (follower state is
+  kept for the `MAX_FOLLOWED_RUNS` = 3 most recently used runs); `discover:false`
+  reuses the cached run dir, `walkRepo:false` the cached changed-files list;
+  `byteBudget` bounds the bytes read, and `cache.pending` is then true until a later
+  build has read the rest (the snapshot of a pending build is partial — don't publish it).
+  Without options it reads everything from scratch (what the tests use).
   Superseded-agent detection runs inside `buildSnapshot`: an agent is flagged
   `superseded=true` when it shares the same agentType+pass key with a newer agent,
   has no result, and its `start` predates the newer agent's — without mis-flagging
   genuine parallel fan-out cohorts.
 - Host wiring: `activate()` (`src/extension.ts`) registers the sidebar `WebviewView`,
   the editor panel, commands, the status-bar item, an `fs.watch` on the run dir, and
-  a polling timer.
+  a polling timer. **All refreshes go through `RefreshPacer`** (`src/pacer.ts`): the
+  poll tick requests a rescan refresh (discovery + repo walk); `fs.watch` events call
+  `pacer.changed()` only while a view is visible (≤ 1 refresh/s); a pending build
+  re-queues itself with `pacer.request(0, false)`. Snapshots are posted only to
+  visible webviews (`pushToVisible`); a view that becomes visible triggers a refresh.
 
 See **docs/DATA-FORMAT.md** for the exact on-disk shapes these rely on.
 
 ## Conventions & gotchas
 
 - **Read-only, always.** The extension must never write to `~/.claude` or the repo.
+- **Never do per-event work proportional to run size on the host thread.** The
+  extension host is shared with every extension, Claude Code included; blocking it
+  disconnects Claude Code sessions (issue #3). Route refreshes through the pacer,
+  read files incrementally, and bound synchronous work (byte budgets, capped walks).
 - **⚠️ Webview JS/CSS live in TEMPLATE LITERALS — DOUBLE-ESCAPE everything. (This exact bug
   has broken the build ~5 times, incl. an aborted workflow run.)** The webview client script
   and styles are backtick-delimited string constants: `CSS`/`CSS_SIDEBAR`/`SEV_BADGE_CSS` in
