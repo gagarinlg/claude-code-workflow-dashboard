@@ -2,7 +2,7 @@
   "name": "claude-code-workflow-dashboard",
   "displayName": "Claude Code Workflow Dashboard",
   "description": "Live dashboard for Claude Code workflow runs — loop & agent overview, per-agent output, and review findings, updated in real time. Unofficial community tool, not affiliated with Anthropic.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "malte-langermann",
   "author": {
     "name": "Malte Langermann",
@@ -166,7 +166,7 @@
         "claudeWorkflow.workflowsGlobBase": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Base directory searched recursively for the newest `wf_*` workflow run. Leave empty to use `~/.claude/projects` (auto-discovers the most recent run across all projects)."
+          "markdownDescription": "Base directory searched recursively for the newest `wf_*` workflow run. Leave empty to use `~/.claude/projects` (auto-discovers the most recent run across all project folders)."
         },
         "claudeWorkflow.repoDir": {
           "type": "string",
@@ -177,7 +177,7 @@
           "type": "number",
           "default": 4000,
           "minimum": 1000,
-          "description": "Polling interval in milliseconds (minimum 1000). Changes take effect on the next polling tick — no reload needed. While a dashboard view is visible, it also refreshes on file changes in the run, at most once a second."
+          "description": "Polling interval in milliseconds (minimum 1000). Changes take effect on the next polling tick — no reload needed. While a dashboard view is visible, it also refreshes once per second to catch live updates."
         },
         "claudeWorkflow.statusBar": {
           "type": "boolean",
@@ -187,7 +187,7 @@
         "claudeWorkflow.roleRules": {
           "type": "array",
           "default": [],
-          "markdownDescription": "Optional rules to label agents per workflow: an array of `{ \"re\": \"<regex>\", \"label\": \"<name>\", \"key\": \"<id>\" }`. Each rule matches against an agent's opening prompt.",
+          "markdownDescription": "Optional rules to label agents per workflow: an array of `{ \"re\": \"<regex>\", \"label\": \"<name>\", \"key\": \"<id>\" }`. Each rule matches against an agent's opening prompt line and a matching label is shown in the UI.",
           "items": {
             "type": "object",
             "properties": {
@@ -207,3 +207,4 @@
     }
   }
 }
+

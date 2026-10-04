@@ -1,9 +1,12 @@
 # Change Log
 
-## [Unreleased]
+## [1.0.2] — 2026-10-04
 
 ### Fixed
 
+- **Release metadata aligned with the shipped v1.0.2 tag.**
+  The extension version and changelog are now synchronized for the next Marketplace +
+  Open VSX release.
 - **The extension host no longer freezes or crashes during large workflow runs**
   ([#3](https://github.com/gagarinlg/claude-code-workflow-dashboard/issues/3)).
   Every file-change event in the run directory used to re-read and re-parse every
@@ -27,7 +30,6 @@
   The per-file size cap existed to bound synchronous reads; incremental reading
   bounds them instead.
 - The **Refresh** button and command now re-read the run from scratch.
-
 - **The dashboard panel can be reopened after it has been closed.** Its
   `onDidDispose` handler read the panel's `webview` getter, which throws once
   the panel is disposed — so the cleanup never cleared the stored panel and
