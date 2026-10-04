@@ -4,6 +4,30 @@
 
 ### Fixed
 
+- **The extension host no longer freezes or crashes during large workflow runs**
+  ([#3](https://github.com/gagarinlg/claude-code-workflow-dashboard/issues/3)).
+  Every file-change event in the run directory used to re-read and re-parse every
+  agent transcript synchronously. With a dozen agents appending several times a
+  second, that starved the extension host that all extensions share. Claude Code
+  then lost its connection ("Claude Code stopped responding in this tab"), and the
+  host was eventually killed. Now:
+  - transcripts and the journal are read **incrementally**: each refresh parses
+    only the lines appended since the previous one;
+  - file-change events are **coalesced** into at most one refresh per second, and
+    ignored while no dashboard view is visible (the poll keeps the status bar current);
+  - one refresh reads about 4 MiB (more only to finish a single longer line) and then
+    yields, so the first load of a large run is spread over short slices;
+  - run discovery and the changed-files walk run on poll ticks only, and discovery
+    no longer lists the agent files of every run it passes;
+  - snapshots are posted only to visible views; a hidden view is caught up when shown.
+
+  On a real 136-agent run (42 MB of transcripts), a refresh after new output dropped
+  from ~145 ms, repeated for every file-change event, to ~6 ms at most once a second.
+- **Agents with a transcript over 10 MiB are no longer missing** from the dashboard.
+  The per-file size cap existed to bound synchronous reads; incremental reading
+  bounds them instead.
+- The **Refresh** button and command now re-read the run from scratch.
+
 - **The dashboard panel can be reopened after it has been closed.** Its
   `onDidDispose` handler read the panel's `webview` getter, which throws once
   the panel is disposed — so the cleanup never cleared the stored panel and

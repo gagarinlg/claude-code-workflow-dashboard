@@ -69,13 +69,15 @@ and not shipped in the VSIX.
 
 ```
 src/extension.ts          Activation / host wiring (commands, views, status bar, watcher, timer)
+src/pacer.ts              RefreshPacer — coalesces file-change events into ≤ 1 refresh per second
 src/data/discovery.ts     findWorkflowDir — discovers the newest wf_* run
 src/data/parse.ts         jload, deriveLabel, classify, agentStats, sevCounts
-src/data/snapshot.ts      buildSnapshot + Snapshot types
+src/data/snapshot.ts      buildSnapshot + Snapshot types, SnapshotCache (incremental state)
+src/data/incremental.ts   JsonlFollower — reads append-only JSONL files incrementally
 src/data/changed.ts       walkChanged
 src/webview/html.ts       getHtml() — webview template + inline client script
 build.mjs                 esbuild build script
-vitest.config.ts          Vitest config; 90 % coverage gate on src/data/**, src/webview/**, and src/export/**
+vitest.config.ts          Vitest config; 90 % coverage gate on src/data/**, src/webview/**, src/export/**, and src/pacer.ts
 eslint.config.mjs         ESLint flat config
 tsconfig.json             TypeScript strict config
 test/                     Vitest unit tests (*.test.ts) + fixtures/
@@ -119,8 +121,8 @@ ROADMAP.md                Feature plan and decision log — read this before sta
 ## Coverage gate
 
 Vitest is configured with a **90 % statement/branch/function/line coverage gate**
-on `src/data/**`, `src/webview/**`, and `src/export/**`. Pull requests that drop
-coverage below 90 % in any of these three directories will fail CI.
+on `src/data/**`, `src/webview/**`, `src/export/**`, and `src/pacer.ts`. Pull
+requests that drop coverage below 90 % in any of these will fail CI.
 
 When you add a new pure function under `src/data/`, a new webview rendering path
 under `src/webview/`, or a new export function under `src/export/`, add tests for

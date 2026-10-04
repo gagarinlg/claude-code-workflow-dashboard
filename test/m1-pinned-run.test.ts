@@ -152,8 +152,9 @@ describe('M1-PinnedRun AC-PIN-2 — pinned dir overrides auto-discovery', () => 
   it('pinned snapshot workflowDir is wf_old (the pinned path)', () => {
     const snap = buildSnapshot(makeCfg(tmpBase, wfOld));
     if (!snap.ok) return;
-    // workflowDir must point to the pinned dir.
-    expect(snap.workflowDir).toBe(wfOld);
+    // workflowDir must point to the pinned dir. buildSnapshot returns the
+    // symlink-resolved path (on macOS the tmpdir /var is a link to /private/var).
+    expect(snap.workflowDir).toBe(fs.realpathSync(wfOld));
   });
 });
 

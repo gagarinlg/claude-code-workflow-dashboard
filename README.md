@@ -85,8 +85,10 @@ active without any per-workflow setup.
   Unknown shapes fall back to a generic key-value table.
 - **Superseded agent detection** — when the workflow engine retries a stalled agent,
   the zombie is shown as "superseded" and excluded from the live count.
-- **Live updates** — refreshes instantly on workflow file changes (and on a
-  configurable interval), preserving your scroll position and active tab.
+- **Live updates** — while a dashboard view is visible, refreshes on workflow file
+  changes (at most once a second) and on a configurable interval, preserving your
+  scroll position and active tab. Files are read incrementally, so large runs stay
+  cheap on the extension host that Claude Code shares.
 - **Run picker** — pin any recent workflow run via the **Select Workflow Run…**
   command (view-title icon or Command Palette). Default remains "Follow newest";
   choosing "Follow newest" at the top of the picker unpins.
@@ -134,7 +136,7 @@ Open it without leaving the editor:
 | --- | --- | --- |
 | `claudeWorkflow.workflowsGlobBase` | `~/.claude/projects` | Base dir searched recursively for the newest `wf_*` run. |
 | `claudeWorkflow.repoDir` | first workspace folder | Repo whose recently-changed files appear in the **Changed files** panel. |
-| `claudeWorkflow.refreshMs` | `4000` | Fallback refresh interval (it also refreshes on file changes). |
+| `claudeWorkflow.refreshMs` | `4000` | Polling interval. While a dashboard view is visible it also refreshes on file changes, at most once a second. |
 | `claudeWorkflow.statusBar` | `true` | Show the live status-bar launcher. |
 | `claudeWorkflow.roleRules` | `[]` | Optional `{re,label,key}[]` to label agents per workflow. `agentType` from `agent-*.meta.json` is the primary label source; `roleRules` + `classify()` is the fallback for agents without a known `agentType`. |
 

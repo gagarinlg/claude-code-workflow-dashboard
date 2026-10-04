@@ -3,8 +3,9 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { buildSnapshot, CHANGED_MAX_SECS, MAX_AGENTS, MAX_PROMPT_CHARS } from './data/snapshot';
+import { buildSnapshot, SnapshotCache, CHANGED_MAX_SECS, MAX_AGENTS, MAX_PROMPT_CHARS } from './data/snapshot';
 import { getHtml } from './webview/html';
+import { RefreshPacer } from './pacer';
 import type { Cfg, Snapshot, SnapshotOk } from './data/snapshot';
 import type { RoleRule } from './data/parse';
 import { DEFAULT_ROLE_RULES, STALE_SECS } from './data/parse';
@@ -21,7 +22,8 @@ import { generateMarkdown, buildExportFilename } from './export/markdown';
 // activate() calls. The activate() reset block already handles re-activation correctly;
 // this is a code-quality improvement deferred to tech-debt.
 let latest: Snapshot | null = null;
-const webviews = new Set<vscode.Webview>();
+// Each attached webview with a getter for whether it is currently visible.
+const webviews = new Map<vscode.Webview, () => boolean>();
 let statusItem: vscode.StatusBarItem | null = null;
 let watcher: fs.FSWatcher | null = null;
 let watchedDir: string | null = null;
@@ -34,6 +36,23 @@ let outputChannel: vscode.OutputChannel | null = null;
 // the auto-discovered newest. Persisted per-workspace via workspaceState.
 let pinnedDir: string | null = null;
 const PINNED_RUN_KEY = 'claudeWorkflow.pinnedRun';
+
+// --- Refresh pacing ---
+// Everything here runs on the extension host thread that every extension shares,
+// Claude Code's own included, and fs.watch fires on every transcript append:
+// several times a second per live agent. Rebuilding the snapshot on each event
+// froze and crashed the host during large workflow runs (issue #3). So:
+// - watcher events are coalesced by the pacer into at most one rebuild per second,
+//   and ignored while no dashboard view is visible (the poll keeps the status bar current);
+// - a rebuild reads only what was appended since the previous one (snapCache);
+// - a rebuild reads at most SLICE_BYTES, then yields to the event loop and continues,
+//   so the first load of a large run is spread over several short slices;
+// - run discovery and the repo walk happen on poll ticks, not on watcher events.
+const SLICE_BYTES = 4 * 1024 * 1024;
+// Builds slower than this are logged to the output channel.
+const SLOW_BUILD_MS = 100;
+const snapCache = new SnapshotCache();
+const pacer = new RefreshPacer((rescan) => refresh(rescan));
 
 export function getCfg(): Cfg {
   const c = vscode.workspace.getConfiguration('claudeWorkflow');
@@ -58,7 +77,7 @@ export function getCfg(): Cfg {
 // Strip workflowDir (absolute filesystem path) from any SnapshotOk before
 // sending it to a webview. The webview JS never reads workflowDir, and
 // omitting it reduces the information-disclosure surface if an XSS payload
-// is ever injected into the webview. Used by both pushToAll() and the
+// is ever injected into the webview. Used by both pushToVisible() and the
 // initial send in attachWebview() so both paths stay consistent.
 function safeSnap(s: Snapshot | null): Snapshot | null {
   if (!s || !s.ok) return s;
@@ -67,12 +86,28 @@ function safeSnap(s: Snapshot | null): Snapshot | null {
   return safe as Snapshot;
 }
 
-function pushToAll(): void {
-  for (const w of webviews) {
+// Post `latest` to every visible webview. Hidden views (both keep their context)
+// are refreshed when they become visible (onBecameVisible).
+function pushToVisible(): void {
+  for (const [w, isVisible] of webviews) {
+    if (!isVisible()) continue;
     try {
       w.postMessage({ type: 'snapshot', snap: safeSnap(latest) });
     } catch {} // webview may be disposed; postMessage on a disposed view throws
   }
+}
+
+function anyVisible(): boolean {
+  for (const isVisible of webviews.values()) {
+    if (isVisible()) return true;
+  }
+  return false;
+}
+
+// Explicit user refresh: drop the incremental state and read the run afresh.
+function hardRefresh(): void {
+  snapCache.clear();
+  pacer.request(0, true);
 }
 
 function manageWatch(): void {
@@ -89,7 +124,7 @@ function manageWatch(): void {
     // closure refers to 'w' (the exact watcher created here), not the module-level
     // 'watcher' variable. This prevents a stale-closure race where a delayed error
     // event on a previously-replaced watcher nulls the current active watcher.
-    const w = fs.watch(dir, () => refresh());
+    const w = fs.watch(dir, () => { if (anyVisible()) pacer.changed(); });
     // Handle errors (e.g. EPERM when the watched dir is deleted on Windows) so
     // the unhandled-error event doesn't crash the Extension Host process.
     // close() is called on the specific instance to release the OS handle.
@@ -124,27 +159,43 @@ function updateStatusBar(): void {
   statusItem.show();
 }
 
-function refresh(cfg?: Cfg): void {
-  const c = cfg ?? getCfg();
-  latest = buildSnapshot(c);
-  pushToAll();
+// Only the pacer calls this, so refreshes never overlap or nest.
+function refresh(rescan: boolean): void {
+  const t0 = Date.now();
+  const snap = buildSnapshot(getCfg(), {
+    cache: snapCache,
+    discover: rescan,
+    walkRepo: rescan,
+    byteBudget: SLICE_BYTES,
+  });
+  const ms = Date.now() - t0;
+  if (ms > SLOW_BUILD_MS && outputChannel) {
+    outputChannel.appendLine(`[refresh] snapshot build took ${ms} ms (read ${(snapCache.bytesRead / 1048576).toFixed(1)} MiB)`);
+  }
+  if (snapCache.pending) {
+    // Partial: more to read. Yield to the event loop, then continue.
+    pacer.request(0, false);
+    return;
+  }
+  latest = snap;
+  pushToVisible();
   manageWatch();
   updateStatusBar();
 }
 
-function attachWebview(webview: vscode.Webview, disposables: vscode.Disposable[], mode: 'panel' | 'sidebar' = 'panel'): void {
+function attachWebview(webview: vscode.Webview, disposables: vscode.Disposable[], mode: 'panel' | 'sidebar', isVisible: () => boolean): void {
   // localResourceRoots: [] prevents the webview from loading local files via
   // vscode-resource: URIs — all resources are inlined, so no access is needed.
   webview.options = { enableScripts: true, localResourceRoots: [] };
   const nonce = crypto.randomBytes(16).toString('base64');
   webview.html = getHtml(nonce, CHANGED_MAX_SECS / 60, MAX_AGENTS, mode, STALE_SECS);
-  webviews.add(webview);
+  webviews.set(webview, isVisible);
   // Track the message-listener disposable so it is cancelled when the view is
   // disposed (or when the extension deactivates via context.subscriptions).
   const msgDisposable = webview.onDidReceiveMessage((m: unknown) => {
     if (!m || typeof m !== 'object') return;
     const msg = m as Record<string, unknown>;
-    if (msg['type'] === 'refresh') refresh();
+    if (msg['type'] === 'refresh') hardRefresh();
     else if (msg['type'] === 'guide') vscode.commands.executeCommand('claudeWorkflow.openGuide');
     else if (msg['type'] === 'openFull') vscode.commands.executeCommand('claudeWorkflow.open');
     else if (msg['type'] === 'selectRun') vscode.commands.executeCommand('claudeWorkflow.selectRun');
@@ -169,6 +220,11 @@ function attachWebview(webview: vscode.Webview, disposables: vscode.Disposable[]
   }
 }
 
+// A view that becomes visible gets fresh data right away.
+function onBecameVisible(): void {
+  pacer.request(0, true);
+}
+
 class DashboardViewProvider implements vscode.WebviewViewProvider {
   constructor(private readonly ctx: vscode.ExtensionContext) {}
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -185,12 +241,16 @@ class DashboardViewProvider implements vscode.WebviewViewProvider {
     // (vscode.d.ts). The current implementation happens not to throw here, but
     // capturing keeps the cleanup off that undocumented behaviour.
     const viewWebview = view.webview;
-    attachWebview(viewWebview, viewDisposables, 'sidebar');
+    const isVisible = (): boolean => {
+      try { return view.visible; } catch { return false; } // disposed
+    };
+    attachWebview(viewWebview, viewDisposables, 'sidebar', isVisible);
+    viewDisposables.push(view.onDidChangeVisibility(() => { if (isVisible()) onBecameVisible(); }));
     view.onDidDispose(() => {
       webviews.delete(viewWebview);
       viewDisposables.forEach((d) => d.dispose());
     });
-    if (!latest) refresh();
+    pacer.request(0, true);
   }
 }
 
@@ -244,7 +304,7 @@ async function runSelectRun(ctx: vscode.ExtensionContext): Promise<void> {
     await ctx.workspaceState.update(PINNED_RUN_KEY, pinnedDir);
   }
 
-  refresh();
+  pacer.request(0, true);
 }
 
 async function runExportMarkdown(): Promise<void> {
@@ -345,7 +405,19 @@ function openEditorPanel(): void {
   // onDidDispose throws and aborts the cleanup, leaving editorPanel pointing at a
   // disposed panel. Capture it while the panel is alive.
   const panelWebview = editorPanel.webview;
-  attachWebview(panelWebview, panelDisposables);
+  const panel = editorPanel;
+  const isVisible = (): boolean => {
+    try { return panel.visible; } catch { return false; } // disposed
+  };
+  attachWebview(panelWebview, panelDisposables, 'panel', isVisible);
+  // onDidChangeViewState also fires on focus changes; react to hidden → visible only.
+  let wasVisible = isVisible();
+  panelDisposables.push(panel.onDidChangeViewState(() => {
+    const v = isVisible();
+    if (v && !wasVisible) onBecameVisible();
+    wasVisible = v;
+  }));
+  pacer.request(0, true);
   editorPanel.onDidDispose(() => {
     webviews.delete(panelWebview);
     editorPanel = null;
@@ -362,6 +434,8 @@ export function activate(context: vscode.ExtensionContext): void {
   // Tech-debt: see ROADMAP.md §"M3-tech-debt: Activation-context object in extension.ts".
   latest = null;
   webviews.clear();
+  pacer.cancel();
+  snapCache.clear();
 
   // Restore the pinned run from workspaceState so the pin survives window reloads.
   pinnedDir = context.workspaceState.get<string>(PINNED_RUN_KEY) ?? null;
@@ -402,7 +476,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('claudeWorkflow.open', () => openEditorPanel()),
     vscode.commands.registerCommand('claudeWorkflow.focus', () =>
       vscode.commands.executeCommand('claudeWorkflow.dashboard.focus')),
-    vscode.commands.registerCommand('claudeWorkflow.refresh', () => refresh()),
+    vscode.commands.registerCommand('claudeWorkflow.refresh', () => hardRefresh()),
     vscode.commands.registerCommand('claudeWorkflow.openGuide', () => {
       const uri = vscode.Uri.file(path.join(context.extensionPath, 'WORKFLOW-AUTHORING.md'));
       vscode.commands.executeCommand('markdown.showPreview', uri).then(undefined, () =>
@@ -418,12 +492,17 @@ export function activate(context: vscode.ExtensionContext): void {
   // after each callback, so a user who changes the setting sees the new interval
   // on the next tick without needing to reload the window.
   let timer: ReturnType<typeof setTimeout> | null = null;
-  function scheduleRefresh(): void {
-    timer = setTimeout(() => { refresh(); scheduleRefresh(); }, getCfg().refreshMs);
+  function schedulePoll(): void {
+    timer = setTimeout(() => { pacer.request(0, true); schedulePoll(); }, getCfg().refreshMs);
   }
-  context.subscriptions.push({ dispose: () => { if (timer !== null) clearTimeout(timer); } });
-  scheduleRefresh();
-  refresh();
+  context.subscriptions.push({
+    dispose: () => {
+      if (timer !== null) clearTimeout(timer);
+      pacer.cancel();
+    },
+  });
+  schedulePoll();
+  pacer.request(0, true);
 }
 
 export function deactivate(): void {
@@ -432,4 +511,5 @@ export function deactivate(): void {
     watcher = null;
     watchedDir = null;
   }
+  pacer.cancel();
 }

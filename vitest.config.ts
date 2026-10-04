@@ -20,7 +20,7 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      include: ['src/data/**', 'src/webview/**', 'src/export/**'],
+      include: ['src/data/**', 'src/webview/**', 'src/export/**', 'src/pacer.ts'],
       thresholds: {
         perFile: true,
         lines: 90,

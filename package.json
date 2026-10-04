@@ -177,7 +177,7 @@
           "type": "number",
           "default": 4000,
           "minimum": 1000,
-          "description": "Fallback polling interval in milliseconds (minimum 1000). Changes take effect on the next polling tick — no reload needed. The dashboard also refreshes immediately on file changes."
+          "description": "Polling interval in milliseconds (minimum 1000). Changes take effect on the next polling tick — no reload needed. While a dashboard view is visible, it also refreshes on file changes in the run, at most once a second."
         },
         "claudeWorkflow.statusBar": {
           "type": "boolean",

@@ -573,7 +573,8 @@ describe('M1-SidebarUX — sidebar mode', () => {
     // The DashboardViewProvider must call attachWebview with 'sidebar'.
     // F13 (round-5): uses view-scoped viewDisposables instead of ctx.subscriptions
     // to prevent disposable leaks on repeated resolveWebviewView() calls.
-    expect(src).toContain("attachWebview(viewWebview, viewDisposables, 'sidebar')");
+    // (The fourth argument is the view's visibility getter.)
+    expect(src).toContain("attachWebview(viewWebview, viewDisposables, 'sidebar',");
   });
 
   it('extension.ts onDidReceiveMessage handles openFull type by executing claudeWorkflow.open', () => {
