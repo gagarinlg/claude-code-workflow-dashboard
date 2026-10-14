@@ -288,6 +288,37 @@ function wire(){
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Chat tab: @tag wiring — click/Enter/Space on a chat-tag jumps to that
+  // agent's card in the Agents tab. Matches is a loose, case-insensitive
+  // substring test against the agent's label and key so a tag like '@Klaus'
+  // matches an agent labelled 'Security' with key 'security_reviewer' only
+  // when the tag text itself overlaps — in practice reviewers are addressed
+  // by their persona name or role, both of which appear in label/key for the
+  // known agent types (see AGENT_TYPE_MAP in src/data/parse.ts). No match
+  // found is a silent no-op (never throws, never misnavigates).
+  document.querySelectorAll('[data-chattag]').forEach(function(el){
+    function act(){
+      var tag=(el.dataset.chattag||'').toLowerCase();
+      if(!tag)return;
+      var agent=snap&&snap.agents&&snap.agents.find(function(a){
+        var lbl=(a.label||'').toLowerCase();
+        var key=(a.key||'').toLowerCase();
+        return (lbl&&(lbl.indexOf(tag)!==-1||tag.indexOf(lbl)!==-1))
+          ||(key&&(key.indexOf(tag)!==-1||tag.indexOf(key)!==-1));
+      });
+      if(!agent)return;
+      state.openAgents[agent.id]=true;
+      state.activeTab='agents';
+      save();
+      render();
+      var card=document.querySelector('[data-aid="'+CSS.escape(agent.id)+'"]');
+      if(card)card.scrollIntoView({block:'nearest'});
+    }
+    el.addEventListener('click',act);
+    el.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();act();}});
+  });
+
   // Tab bar wiring — WAI-ARIA keyboard model for the tablist.
   wireTabBar();
 }

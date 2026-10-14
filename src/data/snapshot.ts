@@ -6,9 +6,12 @@ import type { RoleRule, TailEntry } from './parse';
 import { walkChanged } from './changed';
 import { JsonlFollower, JOURNAL_OPS, TRANSCRIPT_OPS, newBudget } from './incremental';
 import type { TranscriptAcc } from './incremental';
+import { resolveChatFile, loadChatFile } from './chat';
+import type { ChatFileSnapshot } from './chat';
 
 // Re-export so callers that import from snapshot.ts get the canonical types.
 export type { RoleRule, TailEntry } from './parse';
+export type { ChatTurn, ChatFileSnapshot } from './chat';
 
 // --- Exported types mirroring docs/DATA-FORMAT.md ---
 
@@ -20,6 +23,15 @@ export interface Cfg {
   roleRules: RoleRule[];
   /** When set, use this wf_* dir directly instead of searching under base. */
   pinnedDir?: string;
+  /** Open VS Code workspace folders (absolute paths). Used to locate the
+   *  cross-agent chat / team-review markdown file for the active run — the
+   *  chat file lives in the project workspace, not in the run's transcript dir.
+   *  Omit (or pass []) when there is no workspace (e.g. unit tests). */
+  workspaceFolders?: string[];
+  /** Optional override for the records directory name the workflow plugin
+   *  writes chat/team-review files to (default '.review-tmp'). See
+   *  src/data/chat.ts findChatFiles(). */
+  recordsDir?: string;
 }
 
 // Maximum age in seconds for the "changed files" panel (< 15 minutes).
@@ -157,6 +169,13 @@ export type SnapshotOk = {
   /** Union of filesChanged arrays from all agent structured results, deduplicated and sorted.
    *  Empty array when no agents have reported filesChanged. Never null. */
   changedByAgents: string[];
+  /** Cross-agent chat thread for this run, discovered from the workspace's
+   *  records directory (default '.review-tmp'). null/absent when no
+   *  chat/team-review file is found for this run — the common case
+   *  (single-agent runs, older runs, non-plugin workflows). Optional (rather
+   *  than required) so hand-built SnapshotOk fixtures predating this field
+   *  keep type-checking; buildSnapshot() itself always sets it explicitly. */
+  chat?: ChatFileSnapshot | null;
 };
 
 export type SnapshotErr = {
@@ -197,6 +216,9 @@ export class SnapshotCache {
   run: ResolvedRun | null = null;
   /** Result of the last repo walk; reused when the walk is skipped. */
   changed: { repo: string; files: string[] | null } | null = null;
+  /** Result of the last chat-file resolution; reused (modulo a cheap mtime
+   *  re-check) when discovery is skipped. See _resolveChat(). */
+  chat: ChatCacheEntry | null = null;
   /** Followed files per run directory, least recently used first. */
   readonly runs = new Map<string, RunFiles>();
   /** True when the last build ran out of byte budget; build again to finish. Its snapshot is partial. */
@@ -223,10 +245,25 @@ export class SnapshotCache {
   clear(): void {
     this.run = null;
     this.changed = null;
+    this.chat = null;
     this.runs.clear();
     this.pending = false;
     this.bytesRead = 0;
   }
+}
+
+// Cached chat-resolution context: which workspace/recordsDir/runId it was
+// resolved for, the resolved file path (or null), its mtime, and the parsed
+// result. Re-resolved (candidate search across workspace folders) only on
+// discover ticks or when the context changed; otherwise just a cheap re-stat
+// of the previously-resolved path, re-parsing only if its mtime moved.
+interface ChatCacheEntry {
+  workspaceKey: string;
+  recordsDir: string | undefined;
+  runId: string | undefined;
+  path: string | null;
+  mtimeMs: number;
+  snapshot: ChatFileSnapshot | null;
 }
 
 export interface SnapshotOptions {
@@ -668,9 +705,12 @@ function _buildSnapshotUnsafe(cfg: Cfg, opts: SnapshotOptions): Snapshot {
   }
   const changedByAgents = [...changedByAgentsSet].sort();
 
+  const runId = path.basename(wfDir);
+  const chat = _resolveChat(cfg, cache, runId, opts.discover !== false);
+
   return {
     ok: true,
-    runId: path.basename(wfDir),
+    runId,
     workflowDir: wfDir,
     updatedAt: new Date().toISOString(),
     agentsCapped,
@@ -684,7 +724,51 @@ function _buildSnapshotUnsafe(cfg: Cfg, opts: SnapshotOptions): Snapshot {
     isPinned,
     changed: _changed(cfg, cache, opts.walkRepo !== false),
     changedByAgents,
+    chat,
   };
+}
+
+// Resolve (and, when needed, re-parse) the cross-agent chat file for this run.
+// Discovery — scanning the workspace folders for candidate chat/team-review
+// files — only runs on discover ticks or when the workspace/recordsDir/runId
+// context changed, mirroring _changed()'s treatment of the repo walk. On
+// other ticks the previously-resolved path (if any) is just re-statted —
+// cheap — and only re-read/re-parsed when its mtime moved, so chat updates
+// still surface via the existing poll/watcher refresh cadence without a
+// second timer.
+function _resolveChat(cfg: Cfg, cache: SnapshotCache, runId: string, discover: boolean): ChatFileSnapshot | null {
+  const workspaceFolders = cfg.workspaceFolders ?? [];
+  // JSON.stringify gives an unambiguous, collision-free key for the array
+  // regardless of what characters the workspace paths themselves contain.
+  const workspaceKey = JSON.stringify(workspaceFolders);
+  const prev = cache.chat;
+  const sameContext = !!prev && prev.workspaceKey === workspaceKey && prev.recordsDir === cfg.recordsDir && prev.runId === runId;
+
+  if (discover || !sameContext) {
+    const candidate = resolveChatFile(workspaceFolders, runId, cfg.recordsDir);
+    if (!candidate) {
+      cache.chat = { workspaceKey, recordsDir: cfg.recordsDir, runId, path: null, mtimeMs: 0, snapshot: null };
+      return null;
+    }
+    const snapshot = loadChatFile(candidate.path);
+    cache.chat = { workspaceKey, recordsDir: cfg.recordsDir, runId, path: candidate.path, mtimeMs: candidate.mtimeMs, snapshot };
+    return snapshot;
+  }
+
+  // Same context, no rescan requested: re-stat the previously-resolved file only.
+  if (!prev.path) return null;
+  let mtimeMs: number;
+  try {
+    mtimeMs = fs.statSync(prev.path).mtimeMs;
+  } catch {
+    // File disappeared — degrade to "no chat" until the next discover tick.
+    cache.chat = { ...prev, path: null, mtimeMs: 0, snapshot: null };
+    return null;
+  }
+  if (mtimeMs === prev.mtimeMs) return prev.snapshot;
+  const snapshot = loadChatFile(prev.path);
+  cache.chat = { ...prev, mtimeMs, snapshot };
+  return snapshot;
 }
 
 // walkChanged() stats up to WALK_FILE_LIMIT files of the repo, so the host runs it

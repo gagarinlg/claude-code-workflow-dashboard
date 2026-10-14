@@ -21,6 +21,37 @@ default `~/.claude/projects`). The extension recursively searches for a director
 > M1 adds a "recent runs" picker — collect ALL matching `wf_*` dirs, sort by
 > mtime, and let the user choose, defaulting to newest.
 
+### Cross-agent chat (Chat tab)
+
+Some workflow plugins run reviewer agents that communicate through an
+append-only markdown file — this lives in the **project workspace**, not in the
+`wf_*` run directory, because it is written by the plugin's shell tooling, not
+by an individual `agent()` transcript. Two naming conventions are supported:
+
+```
+<workspace>/.review-tmp/team-review-<scope>-<timestamp>.md   (existing /full-audit convention)
+<workspace>/.review-tmp/chat-<runId>.md                      (dashboard-mode convention)
+```
+
+`.review-tmp` is only the *default* records directory
+(`claudeWorkflow.recordsDir`, configurable) — `src/data/chat.ts`
+`findChatFiles()` tries the configured/default directory directly first and
+only falls back to a bounded, depth-limited recursive scan (skipping
+`node_modules`/`vendor`/hidden dirs, same as the walkers above) when that comes
+up empty, so a differently-named or nested records directory is still found
+without paying for a tree walk in the common case. When several workspace
+folders are open, candidates from all of them are considered; `resolveChatFile()`
+prefers a `chat-<runId>.md` exact match for the active run, then a filename
+substring match, then the most recently modified candidate.
+
+The file is parsed defensively (`parseChatThread()`): it is written by LLM
+agents, so the format will sometimes deviate. Recognised turn boundaries are
+either ATX headings (`## Author ...`) or, as a fallback, `---` horizontal
+rules with the author on the following line. A header line's `@Tag` mentions
+become `addressed[]`; an ISO-8601-ish substring becomes `timestamp`. When no
+boundary at all can be found, the whole file becomes a single raw turn —
+content is never silently dropped, only degraded to `malformed:true`.
+
 ## Files inside a `wf_<id>/` directory
 
 | File | Role |
@@ -132,7 +163,15 @@ For each agent, with `STALE_SECS = 180`:
   "agentsCapped": false,                           // true when agent count exceeded MAX_AGENTS; webview shows a warning banner
   "isPinned": false,                               // true when cfg.pinnedDir is set and the pinned dir exists; shown in sidebar runId line and status-bar meta
   "changed": ["relative/path", ...] | null,      // files changed in repo in last 900 s (15 minutes); null when git is unavailable
-  "changedByAgents": ["relative/path", ...]      // union of all filesChanged[] arrays from every agent's structured result; populated even when changed is empty
+  "changedByAgents": ["relative/path", ...],     // union of all filesChanged[] arrays from every agent's structured result; populated even when changed is empty
+  "chat": {                                      // M-Chat field; null when no chat/team-review file was found for this run (the common case)
+    "sourceFile": "chat-wf_<id>.md",             // basename only — never an absolute path (see workflowDir note below)
+    "updatedAt": "<ISO 8601>",                   // chat file's mtime
+    "turns": [ { "author", "addressed": ["Agent", ...], "timestamp?", "body" } ],
+    "malformed": false,                          // true when no structured turn boundaries were found — turns[] holds one raw fallback turn
+    "turnsCapped": false,                        // true when more than MAX_CHAT_TURNS (500) turns were found — only the most recent are kept
+    "truncated": false                           // true when the source file exceeded MAX_CHAT_BYTES (5 MiB) and was read truncated
+  } | null
 }
 ```
 

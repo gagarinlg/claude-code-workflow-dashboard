@@ -58,12 +58,19 @@ export function getCfg(): Cfg {
   const c = vscode.workspace.getConfiguration('claudeWorkflow');
   let base = c.get<string>('workflowsGlobBase');
   if (!base) base = path.join(os.homedir(), '.claude', 'projects');
+  const ws = vscode.workspace.workspaceFolders;
   let repo = c.get<string>('repoDir');
   if (!repo) {
-    const ws = vscode.workspace.workspaceFolders;
     repo = ws && ws.length ? (ws[0]?.uri.fsPath ?? '') : '';
   }
   const rules = c.get<RoleRule[]>('roleRules');
+  // All open workspace folders — used to locate the cross-agent chat/team-review
+  // markdown file, which lives in the project workspace, not the run's
+  // transcript dir under ~/.claude/projects. Empty array when no workspace
+  // is open (the chat tab then degrades to its empty state, same as any
+  // other run with no chat file).
+  const workspaceFolders = ws ? ws.map((f) => f.uri.fsPath) : [];
+  const recordsDir = c.get<string>('recordsDir');
   return {
     base,
     repo: repo ?? '',
@@ -71,6 +78,8 @@ export function getCfg(): Cfg {
     statusBar: c.get<boolean>('statusBar') !== false,
     roleRules: rules && rules.length ? rules : DEFAULT_ROLE_RULES,
     pinnedDir: pinnedDir ?? undefined,
+    workspaceFolders,
+    recordsDir: recordsDir || undefined,
   };
 }
 

@@ -59,7 +59,7 @@ active without any per-workflow setup.
   or circuit-board icon depending on whether agents are active) shows the current
   phase and agent counts; click it to open the dashboard. There's also an
   **Activity Bar icon** and the keybinding **`Ctrl/Cmd+Alt+W`**.
-- **Tabbed layout** — seven tabs (Agents, Findings, Verdicts, Changed, Charts, Timeline, Results)
+- **Tabbed layout** — eight tabs (Agents, Findings, Verdicts, Changed, Charts, Timeline, Results, Chat)
   below an always-visible Overview strip. Tab selection and per-tab scroll position are
   remembered across refreshes.
 - **Loop & agent overview** — phase, pass number, live/done/dead/superseded agent counts,
@@ -80,6 +80,12 @@ active without any per-workflow setup.
   tokens (when available), cache read/write tokens, tool-call counts, and finding counts
   in a compact metrics bar.
 - **Structured results**, **Verdicts**, and **Changed files** panels.
+- **Chat** — when a workflow writes a cross-agent chat/team-review record
+  (`.review-tmp/chat-<runId>.md` or `.review-tmp/team-review-*.md`), the Chat tab
+  renders it as a readable thread: author, timestamp, and `@tag` chips that jump
+  to that agent's card in the Agents tab. Most runs have none — the tab is then
+  disabled with a clear reason, same as Verdicts/Charts/Results for a run without
+  that data. Included in the Markdown export.
 - **Typed result renderers** — each known agent type (implementer, verifier, reviewer,
   completeness-critic) gets a tailored, readable result view — never a raw JSON dump.
   Unknown shapes fall back to a generic key-value table.
@@ -136,6 +142,7 @@ Open it without leaving the editor:
 | --- | --- | --- |
 | `claudeWorkflow.workflowsGlobBase` | `~/.claude/projects` | Base dir searched recursively for the newest `wf_*` run. |
 | `claudeWorkflow.repoDir` | first workspace folder | Repo whose recently-changed files appear in the **Changed files** panel. |
+| `claudeWorkflow.recordsDir` | `.review-tmp` | Directory (relative to each open workspace folder) the workflow plugin writes cross-agent chat/team-review records to, shown in the **Chat** tab. A bounded fallback scan also finds the files if they live elsewhere. |
 | `claudeWorkflow.refreshMs` | `4000` | Polling interval. While a dashboard view is visible it also refreshes on file changes, at most once a second. |
 | `claudeWorkflow.statusBar` | `true` | Show the live status-bar launcher. |
 | `claudeWorkflow.roleRules` | `[]` | Optional `{re,label,key}[]` to label agents per workflow. `agentType` from `agent-*.meta.json` is the primary label source; `roleRules` + `classify()` is the fallback for agents without a known `agentType`. |
@@ -152,6 +159,12 @@ For each run the dashboard reads:
   counts, the current-activity line, and the expandable output tail.
 - `agent-*.meta.json` — the `agentType` field drives role labelling and typed
   result renderers.
+
+For the **Chat** tab, the dashboard additionally looks in the open workspace
+folder(s) for `.review-tmp/chat-<runId>.md` or `.review-tmp/team-review-*.md`
+(directory name configurable via `claudeWorkflow.recordsDir`) and parses it into
+a thread — this file lives in the project workspace, not the run's transcript
+directory under `~/.claude/projects`.
 
 Agent status is derived as **done** (a result was recorded), **run** (its
 transcript changed within the last 3 minutes), **dead** (interrupted — no result

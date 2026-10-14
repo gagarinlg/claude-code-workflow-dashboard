@@ -1,5 +1,47 @@
 # Change Log
 
+## [1.1.0] — 2026-10-14
+
+### Added
+
+- **Chat tab** — a new tab (after Results) renders the cross-agent conversation
+  some workflow plugins write during a review/discussion phase: reviewer agents
+  raise cross-domain observations and address each other with `@Agent` tags
+  through an append-only markdown file. The dashboard discovers that file,
+  parses it into a readable thread (author, `@tags`, timestamp, body), and
+  renders it as a themed chat log — newest activity scrolled into view by
+  default, `@tags` shown as distinct, clickable chips that jump to that agent's
+  card in the Agents tab.
+  - **Discovery** (`src/data/chat.ts`): supports both the `.review-tmp/team-review-
+    <scope>-<timestamp>.md` convention (existing `/full-audit`) and the newer
+    `.review-tmp/chat-<runId>.md` convention (dashboard-mode runs). The records
+    directory defaults to `.review-tmp` but is configurable
+    (`claudeWorkflow.recordsDir`) and never hard-coded as the only possibility:
+    a bounded, depth-limited fallback scan finds the file even in a differently
+    named or nested directory when the default/configured one has nothing.
+    When several workspace folders are open, candidates are collected from all
+    of them; when several chat files exist, the one whose filename matches the
+    active run's id wins, otherwise the most recently modified file is used.
+  - **Parsing** is defensive by construction — the file is written by LLM
+    agents, so the format will sometimes deviate. Malformed or unstructured
+    content never throws and is never dropped: it degrades to a single raw
+    turn rather than losing content.
+  - **Live updates** piggyback on the existing poll/watcher refresh cadence
+    (`SnapshotCache`/`RefreshPacer`) — no second timer. A cheap mtime re-check
+    on every refresh re-parses the file only when it actually changed; full
+    re-discovery (in case a chat file newly appeared) happens on the same
+    "discover" ticks that already drive run discovery and the Changed-files walk.
+  - **Empty state**: most runs have no chat file (single-agent runs, older runs,
+    non-plugin workflows) — the Chat tab is disabled with a clear reason, exactly
+    like the other optional tabs (Verdicts, Charts, Results), rather than showing
+    a broken panel.
+  - **Markdown export** (`src/export/markdown.ts`) includes a "Cross-Agent Chat"
+    section with the same injection-defense escaping as every other section.
+  - New setting: `claudeWorkflow.recordsDir` (default `""` → `.review-tmp`).
+  - New tests: `test/chat-discovery.test.ts`, `test/chat-parse.test.ts`,
+    `test/chat-snapshot.test.ts`, `test/chat-export.test.ts`,
+    `test/chat-webview.test.ts`.
+
 ## [1.0.2] — 2026-10-04
 
 ### Fixed

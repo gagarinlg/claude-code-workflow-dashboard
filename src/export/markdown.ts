@@ -488,6 +488,45 @@ function buildChangedFiles(snap: SnapshotOk): string {
   return lines.join('\n');
 }
 
+function buildChatThread(snap: SnapshotOk): string {
+  const chat = snap.chat;
+  if (!chat || !chat.turns || chat.turns.length === 0) return '';
+
+  const lines: string[] = [];
+  lines.push(`## Cross-Agent Chat`);
+  lines.push('');
+  if (chat.malformed) {
+    lines.push(`> Could not detect structured turns in \`${escInlineCode(chat.sourceFile)}\` — showing the raw file content below.`);
+    lines.push('');
+  }
+  if (chat.turnsCapped) {
+    lines.push(`> Showing the most recent ${chat.turns.length} turns.`);
+    lines.push('');
+  }
+  if (chat.truncated) {
+    lines.push(`> The source file is large — this report reflects a truncated read.`);
+    lines.push('');
+  }
+
+  for (const t of chat.turns) {
+    const who = escHeading(s(t.author) || 'Unknown');
+    const when = t.timestamp ? ` — ${escHeading(t.timestamp)}` : '';
+    lines.push(`### ${who}${when}`);
+    lines.push('');
+    if (t.addressed && t.addressed.length) {
+      lines.push(`**To:** ${t.addressed.map((a) => '@' + escKey(a)).join(', ')}`);
+      lines.push('');
+    }
+    const body = escBody(t.body);
+    if (body) {
+      lines.push(body);
+      lines.push('');
+    }
+  }
+
+  return lines.join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -505,6 +544,8 @@ function buildChangedFiles(snap: SnapshotOk): string {
  *   4. Verdicts
  *   5. Structured Results
  *   6. Agent Metrics table
+ *   7. Changed Files
+ *   8. Cross-Agent Chat thread (chat-*.md / team-review-*.md, when present)
  *
  * All values are string-coerced so a missing/null field never throws.
  * The output round-trips cleanly into a GitHub issue or PR comment.
@@ -518,6 +559,7 @@ export function generateMarkdown(snap: SnapshotOk, generatedAt: Date = new Date(
     buildStructuredResults(snap),
     buildAgentMetrics(snap),
     buildChangedFiles(snap),
+    buildChatThread(snap),
   ];
 
   // Join non-empty sections; ensure a single trailing newline.

@@ -706,7 +706,9 @@ describe('Layout — Results panel default state (M3-Layout redesign: tabbed lay
     const js = getPanelJs(getPanelHtml());
     const tabDefsIdx = js.indexOf('function tabDefs()');
     expect(tabDefsIdx).toBeGreaterThan(-1);
-    const tabDefsSlice = js.slice(tabDefsIdx, tabDefsIdx + 1000);
+    // Window widened from 1000 to 1500 chars (Chat tab addition pushed tabDefs()
+    // source past the original budget) — still comfortably bounds just this function.
+    const tabDefsSlice = js.slice(tabDefsIdx, tabDefsIdx + 1500);
     const chartsPos = tabDefsSlice.indexOf("key:'charts'");
     const resultsPos = tabDefsSlice.indexOf("key:'results'");
     expect(chartsPos).toBeGreaterThan(-1);

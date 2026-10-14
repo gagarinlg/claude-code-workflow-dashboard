@@ -2,7 +2,7 @@
   "name": "claude-code-workflow-dashboard",
   "displayName": "Claude Code Workflow Dashboard",
   "description": "Live dashboard for Claude Code workflow runs — loop & agent overview, per-agent output, and review findings, updated in real time. Unofficial community tool, not affiliated with Anthropic.",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "publisher": "malte-langermann",
   "author": {
     "name": "Malte Langermann",
@@ -172,6 +172,11 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Optional repository path; when set, the **Changed** tab shows files recently touched there (within the last 15 minutes). Leave empty to use the first open workspace folder."
+        },
+        "claudeWorkflow.recordsDir": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Directory name (relative to each open workspace folder) that the workflow plugin writes cross-agent chat / team-review records to, shown in the **Chat** tab. Leave empty to use `.review-tmp` — a bounded fallback scan also finds the files if they live elsewhere."
         },
         "claudeWorkflow.refreshMs": {
           "type": "number",

@@ -1281,7 +1281,9 @@ describe('Accessibility fixes — Sabine HIGH/MED findings', () => {
     // tabDefs returns an array; verify the key order by finding the return-array content.
     const tabDefsIdx = js.indexOf('function tabDefs()');
     expect(tabDefsIdx).toBeGreaterThan(-1);
-    const tabDefsSlice = js.slice(tabDefsIdx, tabDefsIdx + 1000);
+    // Window widened from 1000 to 1500 chars (Chat tab addition pushed tabDefs()
+    // source past the original budget) — still comfortably bounds just this function.
+    const tabDefsSlice = js.slice(tabDefsIdx, tabDefsIdx + 1500);
     // Keys must appear in the documented order.
     const agentsPos = tabDefsSlice.indexOf("key:'agents'");
     const findingsPos = tabDefsSlice.indexOf("key:'findings'");

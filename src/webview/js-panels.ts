@@ -157,6 +157,7 @@ function tabDefs(){
   var findCount=snap&&snap.allFindings?snap.allFindings.length:0;
   var verdictCount=snap&&snap.verdicts?Object.keys(snap.verdicts).length:0;
   var resultsCount=snap&&snap.structuredResults?snap.structuredResults.length:0;
+  var chatCount=snap&&snap.chat&&snap.chat.turns?snap.chat.turns.length:0;
   return [
     {key:'agents',label:'Agents',enabled:true,badge:agentCount>0?String(agentCount):'',disabledReason:''},
     {key:'findings',label:'Findings',enabled:findCount>0,badge:findCount>0?String(findCount):'',disabledReason:'No findings recorded yet'},
@@ -164,7 +165,11 @@ function tabDefs(){
     {key:'changed',label:'Changed',enabled:true,badge:'',disabledReason:''},
     {key:'charts',label:'Charts',enabled:agentCount>0,badge:'',disabledReason:'No agents started yet'},
     {key:'timeline',label:'Timeline',enabled:agentCount>0,badge:'',disabledReason:'No agents started yet'},
-    {key:'results',label:'Results',enabled:resultsCount>0,badge:'',disabledReason:'No structured results yet'}
+    {key:'results',label:'Results',enabled:resultsCount>0,badge:'',disabledReason:'No structured results yet'},
+    // Chat: cross-agent conversation for this run (chat-*.md / team-review-*.md
+    // discovered under the workspace's records directory). Most runs have none —
+    // disabled (not hidden) for consistency with the other optional tabs above.
+    {key:'chat',label:'Chat',enabled:chatCount>0,badge:chatCount>0?String(chatCount):'',disabledReason:'No cross-agent chat recorded for this run'}
   ];
 }
 // Ensure state.activeTab is a currently-enabled tab; fall back to 'agents'.
@@ -208,6 +213,7 @@ function tabContent(){
   else if(k==='charts')body=snap.agents&&snap.agents.length?chartsPanel():'<div class="dim pad">No agents yet.</div>';
   else if(k==='timeline')body=snap.agents&&snap.agents.length?timelinePanel():'<div class="dim pad" data-testid="tl-empty">No agents yet.</div>';
   else if(k==='results')body=snap.structuredResults&&snap.structuredResults.length?resultsPanel():'<div class="dim pad">No structured results yet.</div>';
+  else if(k==='chat')body=snap.chat&&snap.chat.turns&&snap.chat.turns.length?chatPanel():'<div class="dim pad" data-testid="chat-empty">No cross-agent chat recorded for this run.</div>';
   // aria-labelledby references the active tab button
   return '<div id="tab-content" role="tabpanel" aria-labelledby="tab-'+esc(k)+'">'+body+'</div>';
 }
@@ -280,6 +286,11 @@ function render(){
   var tcNew=document.getElementById('tab-content');
   if(tcNew&&state.tabScroll&&state.tabScroll[state.activeTab]!=null){
     tcNew.scrollTop=state.tabScroll[state.activeTab];
+  }else if(tcNew&&state.activeTab==='chat'){
+    // Chat is a conversation thread — show the newest turn by default (bottom
+    // of the thread) until the user has scrolled it themselves, at which point
+    // the branch above takes over and restores their position instead.
+    tcNew.scrollTop=tcNew.scrollHeight;
   }
   // Restore timeline horizontal scroll position after re-render.
   var tlScrollNew=document.getElementById('tl-scroll');
@@ -1055,6 +1066,50 @@ function changedPanel(){
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Chat tab: cross-agent conversation thread (chat-*.md / team-review-*.md),
+// discovered server-side by src/data/chat.ts. snap.chat is null/absent for
+// the common case (no such file for this run) — tabDefs() already gates that.
+// ---------------------------------------------------------------------------
+
+// highlightChatTags: wrap @Name mentions inside an already-esc()-encoded /
+// renderInlineMd()-processed string in a clickable, visually distinct span.
+// Safe to apply AFTER esc()/renderInlineMd(): the capture group is restricted
+// to [A-Za-z0-9_-] by the regex itself, so it can never contain '<', '>', '"'
+// or any other character that would need escaping — it is inherently safe to
+// place directly into both the data-chattag attribute and the text content.
+// Clicking (or activating via keyboard) a tag jumps to that agent's card in
+// the Agents tab — wired in wire() (js-wire.ts), matching the tlActivateBar
+// pattern used for Timeline bars/DAG nodes.
+function highlightChatTags(s){
+  return s.replace(/@([A-Za-z][A-Za-z0-9_-]{0,40})/g,function(m,g){
+    return '<span class="chat-tag" tabindex="0" role="button" data-chattag="'+g+'">@'+g+'</span>';
+  });
+}
+
+function chatPanel(){
+  var c=snap.chat;
+  if(!c||!c.turns||!c.turns.length)return '<div class="dim pad" data-testid="chat-empty">No cross-agent chat recorded for this run.</div>';
+  var notes='';
+  if(c.malformed)notes+='<div class="dim chat-caption" data-testid="chat-malformed">Could not detect structured turns in this file — showing the raw content below.</div>';
+  if(c.turnsCapped)notes+='<div class="dim chat-caption">Showing the most recent '+safeN(c.turns.length)+' turns.</div>';
+  if(c.truncated)notes+='<div class="dim chat-caption">The source file is large — showing a truncated read.</div>';
+  var rows=c.turns.map(function(t,i){
+    var tagsHtml=(t.addressed||[]).map(function(a){
+      var ea=esc(a);
+      return '<span class="chat-tag" tabindex="0" role="button" data-chattag="'+ea+'">@'+ea+'</span>';
+    }).join(' ');
+    var tsHtml=t.timestamp?'<span class="chat-ts">'+esc(t.timestamp)+'</span>':'';
+    var addressedHtml=tagsHtml?'<span class="chat-addressed">'+tagsHtml+'</span>':'';
+    var bodyHtml=highlightChatTags(renderInlineMd(normalizeLiteralEscapes(esc(t.body))));
+    return '<div class="chat-turn" data-testid="chat-turn" id="chat-turn-'+i+'">'
+      +'<div class="chat-turn-hdr"><b class="chat-author">'+esc(t.author)+'</b>'+tsHtml+addressedHtml+'</div>'
+      +'<div class="chat-body">'+bodyHtml+'</div>'
+      +'</div>';
+  }).join('');
+  return '<div class="chat-thread" data-testid="chat-thread">'+notes+rows+'</div>';
 }
 
 // ---------------------------------------------------------------------------

@@ -256,6 +256,22 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
 .find-paginator{display:flex;align-items:center;gap:8px;margin:4px 0}
 .find-page-btn{font-size:11px;padding:2px 8px}
 .find-page-info{font-size:11px;opacity:.7;font-variant-numeric:tabular-nums}
+/* Chat tab: cross-agent conversation thread (chat-*.md / team-review-*.md).
+   Turns look like lightweight chat bubbles — themed border/background, no
+   hardcoded colors, consistent with .card / .finding elsewhere in this file. */
+.chat-thread{display:flex;flex-direction:column;gap:10px}
+.chat-caption{font-size:11px;margin-bottom:2px}
+.chat-turn{border:1px solid var(--vscode-panel-border);border-radius:6px;padding:8px 10px;background:var(--vscode-editorWidget-background)}
+.chat-turn-hdr{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:4px}
+.chat-author{font-weight:600}
+.chat-ts{font-size:11px;opacity:.65;font-variant-numeric:tabular-nums}
+.chat-addressed{display:inline-flex;flex-wrap:wrap;gap:4px}
+/* @tag chips — visually distinct, clickable (jumps to the agent's card in Agents). */
+.chat-tag{font-size:11px;font-weight:600;padding:1px 7px;border-radius:10px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);cursor:pointer;border:1px solid transparent}
+.chat-tag:hover{background:var(--vscode-button-hoverBackground);color:var(--vscode-button-foreground)}
+.chat-tag:focus-visible{outline:2px solid var(--vscode-focusBorder);outline-offset:2px}
+.chat-body{font-size:12px;word-break:break-word}
+.chat-body ul,.chat-body ol{margin:4px 0;padding-left:20px}
 /* Pinned run badge in the editor meta bar — extracted from inline style. */
 .pinned-badge{margin-left:6px;font-size:10px;vertical-align:middle}
 /* Visually hidden but screen-reader accessible — standard sr-only pattern for aria-describedby targets. */
@@ -309,6 +325,8 @@ pre{margin:0;font-family:var(--vscode-editor-font-family);font-size:11px;white-s
   path[data-testid="trend-line"],.chart-trend-line{stroke:ButtonText}
   .chip:not(.off){background:ButtonFace;border:2px solid ButtonText;color:ButtonText;font-weight:600}
   .chip.off{background:ButtonFace;border:1px dashed GrayText;color:GrayText;opacity:1}
+  /* Chat @tag chips: same ButtonFace/ButtonText pairing as other badge-family elements. */
+  .chat-tag{background:ButtonFace;border:1px solid ButtonText;color:ButtonText}
   /* .ok (green for live agents) and .bad (red for stalled) use color-only in normal mode.
      Map to semantic system colors so HC users still see meaningful differentiation. */
   .ok{color:LinkText}.bad{color:Mark}
